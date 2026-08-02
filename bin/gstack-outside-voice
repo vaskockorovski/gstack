@@ -12,11 +12,13 @@
 #
 # exec options:
 #   --repo-root <dir>       repo to run against (default: git toplevel)
-#   --effort <low|medium|high>   reasoning effort (default: high)
+#   --effort <low|medium|high|xhigh>   reasoning effort (default: high)
 #   --repo-context <diff|none>   what a TOOL-LESS backend is given (default: diff)
 #   --base <ref>            base ref for the inlined diff (default: origin/main)
 #   --timeout <seconds>     wall-clock cap (default: 330)
 #   --label <name>          tag for the usage log (default: phase name)
+#   --codex-mode <review|exec>   codex backend only (default: exec). `review` keeps Codex's
+#                           own review prompt tuning and is what the final_gate uses.
 #   --findings-out <file>   require a VALIDATED findings block and write it here as JSON
 #                           {p1,p2,p3,findings[],counts_disagreed}. Severity counts must come
 #                           from this file, never from parsing the prose. Not available on the
@@ -243,7 +245,7 @@ GATE
 
 cmd_exec() {
   local phase="" prompt_file="" repo_root="" effort="high" repo_context="diff"
-  local base="origin/main" timeout_s="330" label="" findings_out=""
+  local base="origin/main" timeout_s="330" label="" findings_out="" codex_mode="exec"
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -256,6 +258,7 @@ cmd_exec() {
       --timeout)      timeout_s="${2:?}"; shift 2 ;;
       --label)        label="${2:?}"; shift 2 ;;
       --findings-out) findings_out="${2:?}"; shift 2 ;;
+      --codex-mode)   codex_mode="${2:?}"; shift 2 ;;
       *) die "unknown option '$1'" ;;
     esac
   done
@@ -267,8 +270,12 @@ cmd_exec() {
   # instructions — and a reviewer given no task plausibly returns no findings, which reads as a
   # clean round. Same family as the empty-diff guard: nothing asked is not nothing wrong.
   [ -s "$prompt_file" ] || die "prompt file is empty: $prompt_file. Refusing to send a review request with no instructions."
-  case "$effort" in low|medium|high) ;; *) die "--effort must be low|medium|high" ;; esac
+  # xhigh is a real Codex reasoning level and the skill documents `/codex review --xhigh`,
+  # so the adapter must accept it — rejecting it would make a documented flag unusable
+  # the moment the gate started routing through here.
+  case "$effort" in low|medium|high|xhigh) ;; *) die "--effort must be low|medium|high|xhigh" ;; esac
   case "$repo_context" in diff|none) ;; *) die "--repo-context must be diff|none" ;; esac
+  case "$codex_mode" in review|exec) ;; *) die "--codex-mode must be review|exec" ;; esac
   [ -n "$label" ] || label="$phase"
 
   if [ -z "$repo_root" ]; then
@@ -303,14 +310,41 @@ cmd_exec() {
         rm -f "$findings_out"
         echo "gstack-outside-voice: note — the codex backend does not emit a structured findings block; no findings file written. Read codex's own output for severities." >&2
       fi
-      exec_codex "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" ;;
+      exec_codex "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$codex_mode" ;;
     openrouter) exec_openrouter "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$repo_context" "$base" "$findings_out" ;;
   esac
 }
 
 exec_codex() {
   local phase="$1" prompt_file="$2" repo_root="$3" effort="$4" timeout_s="$5" label="$6"
+  local codex_mode="${7:-exec}"
   local rc=0
+
+  # `codex review` and `codex exec` are NOT interchangeable, in two ways that both fail loudly
+  # if you assume otherwise — checked against `--help` on 0.124.0 rather than assumed:
+  #
+  #   flags   `codex review` accepts only -c/--config, --uncommitted, --base, --enable,
+  #           --commit, --disable, --title. It rejects the `-C <dir>` and `-s read-only` that
+  #           `codex exec` takes, so review mode cds instead of passing -C, and relies on
+  #           review being inherently read-only rather than asking for a sandbox flag.
+  #   stdin   opposite conventions. `codex exec` reads stdin when the PROMPT is OMITTED;
+  #           `codex review` reads stdin only when PROMPT is the literal `-`. Using the exec
+  #           convention here would send review no instructions at all.
+  #
+  # review mode exists because it keeps Codex's own review prompt tuning, which is most of what
+  # the frontier gate is buying. Routing the gate through `codex exec` would have been a quiet
+  # downgrade dressed up as a refactor.
+  if [ "$codex_mode" = "review" ]; then
+    # No --base: current Codex rejects a custom prompt and --base together, so the diff scope
+    # travels in the prompt text (same shape the skill has always used).
+    ( cd "$repo_root" && with_timeout "$timeout_s" codex review - \
+        -c "model_reasoning_effort=\"$effort\"" < "$prompt_file" ) || rc=$?
+    if [ "$rc" -eq 124 ]; then log_usage codex "" "$phase" "$label" 0 0 timeout
+    elif [ "$rc" -ne 0 ]; then log_usage codex "" "$phase" "$label" 0 0 "error_$rc"
+    else log_usage codex "" "$phase" "$label" 0 0 ok
+    fi
+    return "$rc"
+  fi
   # Flags mirror the previous inline call sites exactly, minus the deprecated
   # `--enable web_search_cached` (codex 0.124.0+: web search is on by default,
   # and its deprecation warning crowded out real errors — see VAS-1926).

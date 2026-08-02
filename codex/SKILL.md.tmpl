@@ -170,19 +170,39 @@ custom prompt and `--base <branch>` together** (the two arguments are mutually
 exclusive at argv level), so put the base diff scope in the prompt instead of
 passing `--base`. Two paths:
 
-**Default path (no custom user instructions):** call `codex review` with the
-filesystem boundary and explicit diff-scope instructions in the prompt. This
-preserves the boundary while avoiding the prompt-plus-`--base` argv shape:
+**Default path (no custom user instructions):** the **final-gate** phase. It runs
+through the outside-voice adapter so the backend is resolved from
+`outside_voice_gate` — which defaults to `codex`, so an unconfigured install
+behaves exactly as it always has. The adapter invokes `codex review` (not
+`codex exec`), keeping Codex's own review prompt tuning, which is most of what
+the frontier gate is buying.
+
+First check readiness, then run:
+
+```bash
+_GATE_MODE=$(~/.claude/skills/gstack/bin/gstack-outside-voice probe --phase final_gate 2>/dev/null || echo not_installed)
+echo "GATE_MODE: $_GATE_MODE"
+```
+
+Branch on it exactly as for `CODEX_MODE` above (`disabled` / `not_installed` /
+`not_authed` fall back to the Claude subagent; only `ready` proceeds).
 
 ```bash
 _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
-cd "$_REPO_ROOT"
+_GATE_PROMPT=$(mktemp "$TMP_ROOT/gstack-gate-prompt-XXXXXX.txt")
+cat > "$_GATE_PROMPT" <<'PROMPT'
+IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. Do NOT modify agents/openai.yaml. Stay focused on repository code only.
+
+Review the changes on this branch against the base branch <base>. Run git diff origin/<base>...HEAD 2>/dev/null || git diff <base>...HEAD to see the diff and review only those changes.
+PROMPT
 # 330s (5.5min) is slightly longer than the Bash 300s so the shell wrapper
 # only fires if Bash's own timeout doesn't.
-_gstack_codex_timeout_wrapper 330 codex review "IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. Do NOT modify agents/openai.yaml. Stay focused on repository code only.
-
-Review the changes on this branch against the base branch <base>. Run git diff origin/<base>...HEAD 2>/dev/null || git diff <base>...HEAD to see the diff and review only those changes." -c 'model_reasoning_effort="high"' < /dev/null 2>"$TMPERR"
+~/.claude/skills/gstack/bin/gstack-outside-voice exec \
+  --phase final_gate --codex-mode review \
+  --prompt-file "$_GATE_PROMPT" --repo-root "$_REPO_ROOT" \
+  --effort high --timeout 330 < /dev/null 2>"$TMPERR"
 _CODEX_EXIT=$?
+rm -f "$_GATE_PROMPT"
 if [ "$_CODEX_EXIT" = "124" ]; then
   _gstack_codex_log_event "codex_timeout" "330"
   _gstack_codex_log_hang "review" "$(wc -c < "$TMPERR" 2>/dev/null || echo 0)"
