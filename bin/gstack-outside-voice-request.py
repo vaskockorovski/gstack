@@ -229,11 +229,49 @@ def parse_findings(text):
     return obj, None
 
 
-def write_usage(prompt_tokens, completion_tokens, served_model):
+# How much of the previous reply to echo back on the retry.
+#
+# A HEAD slice (text[:12000]) was exactly the wrong end. The contract puts the findings block
+# LAST, so a reply long enough to need trimming is a reply whose block sits in the discarded
+# tail — the retry then shows the model everything except the thing it is being asked to fix,
+# and the most common malformation (a block that is present but subtly wrong) becomes invisible
+# to the one mechanism meant to recover it. The failure is silent: the retry still runs, still
+# bills, and still fails, so it reads as "the model would not comply" rather than "we never
+# showed it the block".
+#
+# Keep both ends and elide the MIDDLE, weighted to the tail: the tail carries the malformed
+# block, the head carries the prose findings the model needs to re-enumerate. The elision is
+# announced in-band so the model cannot mistake the gap for the end of its own reply.
+ECHO_BUDGET = 12000
+
+
+def echo_for_retry(text, budget=ECHO_BUDGET):
+    """Return `text` trimmed to roughly `budget` chars, preserving BOTH ends."""
+    if len(text) <= budget:
+        return text
+    tail = (budget * 2) // 3   # the block the contract asks for is at the end
+    head = budget - tail
+    return (text[:head]
+            + "\n\n[... %d characters elided from the middle of your reply ...]\n\n"
+              % (len(text) - head - tail)
+            + text[-tail:])
+
+
+def write_usage(prompt_tokens, completion_tokens, served_model,
+                retry_model="", retry_prompt_tokens=0, retry_completion_tokens=0):
+    # `model` is the model that served the FIRST call, and the token totals are the sum across
+    # both calls. When a retry is routed to a different upstream those two facts disagree, so
+    # the retry is broken out into its own fields rather than folded into `model` — a single
+    # model id standing for two upstreams is a confidently WRONG attribution, and this file is
+    # what the per-voice cost/hit-rate analysis reads. Additive fields: existing readers that
+    # only know `model`/`prompt_tokens` keep working and are no longer silently misinformed.
     with open(os.environ["OR_RESP"], "w") as fh:
         json.dump({"prompt_tokens": prompt_tokens,
                    "completion_tokens": completion_tokens,
-                   "model": served_model}, fh)
+                   "model": served_model,
+                   "retry_model": retry_model,
+                   "retry_prompt_tokens": retry_prompt_tokens,
+                   "retry_completion_tokens": retry_completion_tokens}, fh)
 
 
 payload = ask(prompt)
@@ -242,6 +280,10 @@ usage = payload.get("usage") or {}
 p_tok = usage.get("prompt_tokens", 0)
 c_tok = usage.get("completion_tokens", 0)
 served = payload.get("model", model)
+
+retry_served = ""
+r_ptok = 0
+r_ctok = 0
 
 findings = None
 if findings_path:
@@ -260,12 +302,23 @@ if findings_path:
                  "{\"p1\": <int>, \"p2\": <int>, \"p3\": <int>, \"findings\": "
                  "[{\"severity\": \"P1\", \"title\": \"<short>\", \"location\": \"<file:line>\"}]}"
                  "\n```\n\nYour previous reply was:\n\n%s"
-                 % (why, FENCE, text[:12000]))
+                 % (why, FENCE, echo_for_retry(text)))
         payload2 = ask(retry)
         text2 = content_of(payload2)
         usage2 = payload2.get("usage") or {}
-        p_tok += usage2.get("prompt_tokens", 0)
-        c_tok += usage2.get("completion_tokens", 0)
+        r_ptok = usage2.get("prompt_tokens", 0)
+        r_ctok = usage2.get("completion_tokens", 0)
+        p_tok += r_ptok
+        c_tok += r_ctok
+        # OpenRouter routes per request, so the retry can land on a different upstream than the
+        # first call. Recording only the first model attributes BOTH calls' tokens to it, which
+        # silently corrupts exactly the per-voice cost/hit-rate data this logging exists for.
+        retry_served = payload2.get("model", model)
+        if retry_served != served:
+            sys.stderr.write(
+                "NOTE: the retry was served by %r while the first call was served by %r — "
+                "usage for this round spans two upstreams and is logged separately per call.\n"
+                % (retry_served, served))
         findings, why2 = parse_findings(text2)
         if findings is None:
             sys.stderr.write(
@@ -273,7 +326,7 @@ if findings_path:
                 "count. This round did NOT establish that the artefact is clean — it must not "
                 "be treated as satisfying the stop condition.\n" % why2)
             sys.stdout.write(text)
-            write_usage(p_tok, c_tok, served)
+            write_usage(p_tok, c_tok, served, retry_served, r_ptok, r_ctok)
             sys.exit(4)
 
 sys.stdout.write(text)
@@ -286,4 +339,4 @@ if findings_path and findings is not None:
     sys.stderr.write("findings: P1=%d P2=%d P3=%d\n"
                      % (findings["p1"], findings["p2"], findings["p3"]))
 
-write_usage(p_tok, c_tok, served)
+write_usage(p_tok, c_tok, served, retry_served, r_ptok, r_ctok)

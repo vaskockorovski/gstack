@@ -26,7 +26,7 @@
 #                           ABSENCE after a successful run is the signal to read codex directly.
 #
 # Exit codes:
-#   0  ok          2  usage / refused input (bad ref, empty diff, empty prompt)
+#   0  ok          2  usage / refused input (bad ref, empty diff, empty or oversized prompt)
 #   3  disabled    4  findings block unusable after one retry — NOT a clean round
 #   5  no pre-flight sweep recorded for this lane (first loop round only)
 #   124 timeout (from the timeout wrapper)
@@ -55,6 +55,21 @@ _STATE_DIR="${GSTACK_STATE_ROOT:-${GSTACK_HOME:-${GSTACK_STATE_DIR:-$HOME/.gstac
 # voices carry ~1M-token windows. Exceeding it truncates LOUDLY (see below) —
 # a silently truncated review is indistinguishable from a clean one.
 _MAX_DIFF_BYTES="${GSTACK_OUTSIDE_VOICE_MAX_DIFF_BYTES:-1500000}"
+
+# Max bytes of PROMPT accepted. The diff had a cap and the prompt did not, so the one input a
+# caller constructs by hand was the only unbounded path into the context window.
+#
+# REFUSES rather than truncating, which is the opposite of the diff's treatment, deliberately:
+#   - the diff is MATERIAL. Truncating it loses coverage, and that loss is disclosed to both
+#     the model (an in-band NOTE) and the reader (a stderr WARNING), so the round is still
+#     valid over what remains.
+#   - the prompt is INSTRUCTIONS. Truncating those changes the QUESTION, and there is no
+#     honest way to disclose that — a reviewer asked half a question plausibly returns few
+#     findings, which is indistinguishable from a clean round. Same family as the empty-prompt
+#     refusal below: nothing asked is not nothing wrong.
+# Generous by design — real instruction sets are a few kB, so hitting this means a caller
+# inlined an artefact into the prompt and should pass it as the diff or raise the cap knowingly.
+_MAX_PROMPT_BYTES="${GSTACK_OUTSIDE_VOICE_MAX_PROMPT_BYTES:-262144}"
 
 _cfg() { "$_CONFIG" get "$1" 2>/dev/null || echo ""; }
 
@@ -122,7 +137,15 @@ probe() {
 
 log_usage() {
   # $1 backend  $2 model  $3 phase  $4 label  $5 prompt_tokens  $6 completion_tokens
-  # $7 status. NEVER records prompt text, diff content, or credentials.
+  # $7 status  $8 retry_model  $9 retry_prompt_tokens  $10 retry_completion_tokens.
+  # NEVER records prompt text, diff content, or credentials.
+  #
+  # $2/$5/$6 describe the FIRST call and the round TOTAL respectively; $8-$10 break out the
+  # findings-block retry, which OpenRouter can route to a different upstream than the first
+  # call. Folding a second upstream into $2 would make the row confidently wrong about which
+  # model produced the tokens it is billing — and this file is the input to the per-voice cost
+  # and hit-rate analysis, where a wrong attribution is worse than a missing one. The fields
+  # are always emitted (empty / 0 when there was no retry) so the schema stays uniform.
   [ "$(_cfg telemetry)" = "off" ] && return 0
   mkdir -p "$_STATE_DIR/analytics" 2>/dev/null || return 0
   local _ts
@@ -132,19 +155,22 @@ log_usage() {
   # this file is what the cost analysis reads — a malformed line is a silently missing
   # measurement, not a visible error. Restricting to a safe character class is enough here
   # and avoids a jq dependency in the logging path.
-  local _b _m _p _l _st
+  local _b _m _p _l _st _rm
   _b=$(printf '%s' "$1"  | tr -cd 'A-Za-z0-9._-')
   _m=$(printf '%s' "$2"  | tr -cd 'A-Za-z0-9._/:-')
   _p=$(printf '%s' "$3"  | tr -cd 'A-Za-z0-9._-')
   _l=$(printf '%s' "$4"  | tr -cd 'A-Za-z0-9._-')
   _st=$(printf '%s' "$7" | tr -cd 'A-Za-z0-9._-')
+  _rm=$(printf '%s' "${8:-}" | tr -cd 'A-Za-z0-9._/:-')
   # Token counts come from the API but are interpolated unquoted, so a non-numeric value
   # would produce invalid JSON rather than a wrong number.
-  local _pt _ct
+  local _pt _ct _rpt _rct
   _pt=$(printf '%s' "${5:-0}" | tr -cd '0-9'); [ -n "$_pt" ] || _pt=0
   _ct=$(printf '%s' "${6:-0}" | tr -cd '0-9'); [ -n "$_ct" ] || _ct=0
-  printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"status":"%s","ts":"%s"}\n' \
-    "$_b" "$_m" "$_p" "$_l" "$_pt" "$_ct" "$_st" "$_ts" \
+  _rpt=$(printf '%s' "${9:-0}" | tr -cd '0-9'); [ -n "$_rpt" ] || _rpt=0
+  _rct=$(printf '%s' "${10:-0}" | tr -cd '0-9'); [ -n "$_rct" ] || _rct=0
+  printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"status":"%s","retry_model":"%s","retry_prompt_tokens":%s,"retry_completion_tokens":%s,"ts":"%s"}\n' \
+    "$_b" "$_m" "$_p" "$_l" "$_pt" "$_ct" "$_st" "$_rm" "$_rpt" "$_rct" "$_ts" \
     >> "$_STATE_DIR/analytics/outside-voice.jsonl" 2>/dev/null || true
 }
 
@@ -270,6 +296,11 @@ cmd_exec() {
   # instructions — and a reviewer given no task plausibly returns no findings, which reads as a
   # clean round. Same family as the empty-diff guard: nothing asked is not nothing wrong.
   [ -s "$prompt_file" ] || die "prompt file is empty: $prompt_file. Refusing to send a review request with no instructions."
+  local _psz
+  _psz=$(wc -c < "$prompt_file" | tr -d '[:space:]')
+  if [ "${_psz:-0}" -gt "$_MAX_PROMPT_BYTES" ]; then
+    die "prompt file is ${_psz} bytes, over the ${_MAX_PROMPT_BYTES}-byte cap: $prompt_file. Refusing to truncate instructions — a reviewer asked half a question returns few findings, which is indistinguishable from a clean round. Inline large material via the diff (--repo-context diff), or raise GSTACK_OUTSIDE_VOICE_MAX_PROMPT_BYTES deliberately."
+  fi
   # xhigh is a real Codex reasoning level and the skill documents `/codex review --xhigh`,
   # so the adapter must accept it — rejecting it would make a documented flag unusable
   # the moment the gate started routing through here.
@@ -456,20 +487,40 @@ exec_openrouter() {
     echo "gstack-outside-voice: WARNING — diff exceeded ${_MAX_DIFF_BYTES} bytes and was truncated; this review does NOT cover the omitted tail." >&2
   fi
 
-  local ptok=0 ctok=0 rmodel="$model"
+  local ptok=0 ctok=0 rmodel="" retry_model="" rptok=0 rctok=0
   if [ -s "$resp_file" ]; then
-    ptok=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("prompt_tokens",0))' "$resp_file" 2>/dev/null || echo 0)
-    ctok=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("completion_tokens",0))' "$resp_file" 2>/dev/null || echo 0)
-    rmodel=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("model",""))' "$resp_file" 2>/dev/null || echo "$model")
+    # ONE interpreter start, not one per field — this runs on every request, and the block now
+    # reads six fields. Newline-delimited rather than tab: tab is an IFS whitespace character,
+    # so `read` would COLLAPSE consecutive tabs and silently shift every field after an empty
+    # retry_model (the common case) by one position.
+    local _u
+    _u=$(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+for k, dflt in (("prompt_tokens", 0), ("completion_tokens", 0), ("model", ""),
+                ("retry_model", ""), ("retry_prompt_tokens", 0),
+                ("retry_completion_tokens", 0)):
+    v = d.get(k)
+    print(dflt if v is None else v)
+' "$resp_file" 2>/dev/null) || _u=""
+    if [ -n "$_u" ]; then
+      { read -r ptok; read -r ctok; read -r rmodel
+        read -r retry_model; read -r rptok; read -r rctok; } <<EOF || true
+$_u
+EOF
+    fi
   fi
+  # An absent/blank served model must not become a blank attribution in the row: fall back to
+  # the model we ASKED for, which is the honest best guess when the API did not echo one.
+  [ -n "$rmodel" ] || rmodel="$model"
 
-  if [ "$rc" -eq 124 ]; then
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout
-  elif [ "$rc" -ne 0 ]; then
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" "error_$rc"
-  else
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" ok
+  local _status
+  if [ "$rc" -eq 124 ]; then _status=timeout
+  elif [ "$rc" -ne 0 ]; then _status="error_$rc"
+  else _status=ok
   fi
+  log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" "$_status" \
+    "$retry_model" "$rptok" "$rctok"
 
   rm -f "$resp_file" ${diff_file:+"$diff_file"}
   return "$rc"

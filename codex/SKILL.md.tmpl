@@ -207,6 +207,14 @@ if [ "$_CODEX_EXIT" = "124" ]; then
   _gstack_codex_log_event "codex_timeout" "330"
   _gstack_codex_log_hang "review" "$(wc -c < "$TMPERR" 2>/dev/null || echo 0)"
   echo "Codex stalled past 5.5 minutes. Common causes: model API stall, long prompt, network issue. Try re-running. If persistent, split the prompt or check ~/.codex/logs/."
+elif [ "$_CODEX_EXIT" = "3" ]; then
+  # Outside-voice review is switched off. Reachable here only because this path now routes
+  # through the adapter: raw `codex` never returns 3, so the generic branch below — written
+  # when it did — reported a deliberate user setting as "[codex exit 3]" and logged it as
+  # codex_nonzero_exit, i.e. a config choice rendered as a tool failure in both the message
+  # and the telemetry. Not an error, and emphatically NOT a clean gate: nothing was reviewed.
+  echo "GATE NOT RUN — outside-voice review is disabled. This is NOT a clean gate; nothing was reviewed. Re-enable: \`gstack-config set codex_reviews enabled\`."
+  head -5 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
 elif [ "$_CODEX_EXIT" != "0" ]; then
   # Surface non-zero exits (parse errors, arg-shape breaks, etc.) so the
   # calling agent doesn't read "no output" as a silent model/API stall and

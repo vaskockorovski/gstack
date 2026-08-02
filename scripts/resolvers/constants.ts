@@ -167,7 +167,7 @@ echo "CODEX_MODE: $${m}"
 
 Branch on the echoed \`CODEX_MODE\` (the backend named by \`OUTSIDE_VOICE_BACKEND\` is what will actually run):
 - **\`disabled\`** — outside-voice review is off for this phase. ${disabledLine}
-- **\`not_installed\`** — the backend's client is absent (Codex CLI missing, or \`curl\` missing for a hosted backend). Print: "Outside voice not available for the ${opts.phase} phase — using Claude subagent." Fall back to the Claude subagent path.
+- **\`not_installed\`** — the backend's client is absent (Codex CLI missing, or \`python3\` missing for a hosted backend — that is the program the adapter actually runs to issue the request). Print: "Outside voice not available for the ${opts.phase} phase — using Claude subagent." Fall back to the Claude subagent path.
 - **\`not_authed\`** — the backend is selected but has no credentials. For \`codex\`: run \`codex login\` or set \`$CODEX_API_KEY\`. For \`openrouter\`: set \`$OPENROUTER_API_KEY\`. **Do NOT silently reroute to the other backend** — a phase configured for the cheap tier must never quietly bill the frontier one, and a gate configured for frontier must never quietly downgrade. Print the cause and fall back to the Claude subagent path.
 - **\`ready\`** — run the outside-voice pass below via \`gstack-outside-voice exec --phase ${opts.phase}\`.`;
 }
