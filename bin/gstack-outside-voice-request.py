@@ -24,6 +24,7 @@ import re
 import secrets
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # Per-request nonce in the fence marker.
@@ -106,13 +107,30 @@ base_url = os.environ.get("GSTACK_OUTSIDE_VOICE_BASE_URL") or "https://openroute
 # on the wire in clear text, and the override exists mainly so tests can point at a local stub
 # — so allow http ONLY for loopback, and refuse it anywhere else rather than warn. A warning
 # here would be printed to a stderr nobody reads until after the key has already leaked.
-_parts = base_url.split("://", 1)
-if len(_parts) == 2 and _parts[0] == "http":
-    _host = _parts[1].split("/", 1)[0].split(":", 1)[0]
-    if _host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+#
+# ALLOWLIST the scheme; do not blocklist `http`. Testing only for `http` left three doors open,
+# and each one sends the key somewhere it should never go:
+#   * case. URL schemes are case-insensitive, so `HTTP://evil` is plain http to urllib but is
+#     not the string "http" — the guard was skipped and the key went out in clear text.
+#   * other schemes. `ftp://` has a urllib handler; `file://` reads the local disk and the run
+#     is then logged as a successful round. Neither is https, and neither was checked.
+#   * parsing. Hand-splitting on ":" mangles IPv6 — `http://[::1]:8080` yielded a _host of "["
+#     which failed the allowlist, so the one loopback form the comment promised to support was
+#     refused. urlsplit().hostname strips the brackets and lowercases, which is the whole job.
+# Fail closed: anything not explicitly permitted is refused before a single byte is sent.
+_split = urllib.parse.urlsplit(base_url)
+_scheme = (_split.scheme or "").lower()
+if _scheme == "https":
+    pass
+elif _scheme == "http":
+    if (_split.hostname or "") not in ("127.0.0.1", "localhost", "::1"):
         sys.stderr.write("refusing to send the API key over plain http to %r — use https, "
-                         "or point at loopback for testing\n" % _host)
+                         "or point at loopback for testing\n" % (_split.hostname or base_url))
         sys.exit(1)
+else:
+    sys.stderr.write("refusing to send the API key to a %r URL — GSTACK_OUTSIDE_VOICE_BASE_URL "
+                     "must be https (or http on loopback for testing)\n" % (_scheme or base_url))
+    sys.exit(1)
 
 
 def ask(message):
@@ -138,6 +156,21 @@ def ask(message):
         # Print the API error WITHOUT echoing the request. Never print the Authorization header.
         sys.stderr.write("openrouter HTTP %s: %s\n"
                          % (e.code, e.read().decode("utf-8", "replace")[:2000]))
+        if e.code in (401, 403):
+            # `probe` said "ready" to get here — it only checks that the variable is NON-EMPTY,
+            # which is a presence check wearing a capability check's clothes. So the operator
+            # arrives holding a green readiness signal and a bare upstream error, and OpenRouter's
+            # own 401 text is "Missing Authentication header", which reads as "the adapter forgot
+            # to send it" rather than "your key was rejected". Naming the variable and the expected
+            # shape is what turns a wrong-service key — the actual cause, observed live — from a
+            # code hunt into a one-line fix. Never echo the value.
+            sys.stderr.write(
+                "  ^ the request DID carry an Authorization header; the key in "
+                "$OPENROUTER_API_KEY was rejected. OpenRouter keys look like 'sk-or-v1-…'; a "
+                "credential for a different service will fail exactly like this. Note that a "
+                "non-login shell inherits its environment from the parent process, so an edited "
+                "profile does not take effect until the shell is a login shell or the process "
+                "restarts.\n")
         sys.exit(1)
     except Exception as e:
         sys.stderr.write("openrouter request failed: %s\n" % e)
@@ -229,6 +262,23 @@ def parse_findings(text):
     return obj, None
 
 
+def toks(usage, key):
+    """Token count as an int, whatever the server sent.
+
+    The base URL is overridable, so the responder is not always OpenRouter — some
+    OpenAI-compatible proxies return usage fields as strings. `p_tok += "1234"` is a
+    TypeError, uncaught, which kills the process AFTER the request was billed and BEFORE
+    write_usage runs: the money is spent and the cost row is missing. Under-reporting spend
+    is the one direction the analytics must never fail in, so coerce and move on. A value
+    that is not a number at all counts as 0 rather than crashing — a wrong-but-present row
+    still shows the round happened, which a missing row does not.
+    """
+    try:
+        return int(usage.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def write_usage(prompt_tokens, completion_tokens, served_model):
     with open(os.environ["OR_RESP"], "w") as fh:
         json.dump({"prompt_tokens": prompt_tokens,
@@ -239,8 +289,8 @@ def write_usage(prompt_tokens, completion_tokens, served_model):
 payload = ask(prompt)
 text = content_of(payload)
 usage = payload.get("usage") or {}
-p_tok = usage.get("prompt_tokens", 0)
-c_tok = usage.get("completion_tokens", 0)
+p_tok = toks(usage, "prompt_tokens")
+c_tok = toks(usage, "completion_tokens")
 served = payload.get("model", model)
 
 findings = None
@@ -264,8 +314,8 @@ if findings_path:
         payload2 = ask(retry)
         text2 = content_of(payload2)
         usage2 = payload2.get("usage") or {}
-        p_tok += usage2.get("prompt_tokens", 0)
-        c_tok += usage2.get("completion_tokens", 0)
+        p_tok += toks(usage2, "prompt_tokens")
+        c_tok += toks(usage2, "completion_tokens")
         findings, why2 = parse_findings(text2)
         if findings is None:
             sys.stderr.write(

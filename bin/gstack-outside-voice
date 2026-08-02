@@ -34,7 +34,8 @@
 #                           ABSENCE after a successful run is the signal to read codex directly.
 #
 # Exit codes:
-#   0  ok          2  usage / refused input (bad ref, empty diff, empty prompt)
+#   0  ok          2  usage / refused input (bad ref, empty diff, empty prompt,
+#                     unrecognised outside_voice_* backend value)
 #   3  disabled    4  findings block unusable after one retry — NOT a clean round
 #   5  no pre-flight sweep recorded for this lane (first loop round only)
 #   124 timeout (from the timeout wrapper)
@@ -82,22 +83,33 @@ resolve_backend() {
   # collapsing them is how `gstack-config set` earns its reject-on-invalid rule and then loses
   # it: the config file can be hand-edited, and `outside_voice_loop: opnerouter` would fall
   # through to codex — silently rerouting the cheap loop to the expensive backend, the exact
-  # outcome the setter validation exists to prevent. Warn on the typo; never guess silently.
+  # outcome the setter validation exists to prevent.
+  #
+  # An earlier version warned on stderr and returned codex anyway. That is not "never guess
+  # silently", it is guessing with a receipt nobody collects: on a SUCCESSFUL round the caller
+  # never prints the captured stderr, so a typo'd loop backend bills every round at frontier
+  # price and looks exactly like a correctly configured run. Resolve to `misconfigured` and let
+  # the callers refuse — a review that does not happen is recoverable in one edit, a review that
+  # quietly costs 20x is not, and it is the loop's entire reason for existing.
   case "$backend" in
     codex|openrouter|disabled) printf '%s' "$backend" ;;
     "") printf 'codex' ;;
-    *) echo "gstack-outside-voice: WARNING — $phase backend '$backend' is not recognised (want: codex|openrouter|disabled); falling back to codex. Fix ~/.gstack/config.yaml." >&2
-       printf 'codex' ;;
+    *) printf 'misconfigured' ;;
   esac
 }
 
 # --- readiness probe --------------------------------------------------------
 # Mirrors the four-state contract of the old codexPreflight so callers branch the
-# same way: disabled | not_installed | not_authed | ready.
+# same way: disabled | not_installed | not_authed | ready — plus a fifth,
+# `misconfigured`, for a backend value that is not one of the recognised three.
+# It is deliberately NOT folded into `disabled`: "off on purpose" and "off because
+# you typo'd it" want opposite responses from the operator, and a state that cannot
+# distinguish them is how the typo survives.
 probe() {
   local phase="$1" backend
   backend="$(resolve_backend "$phase")"
 
+  if [ "$backend" = "misconfigured" ]; then echo "misconfigured"; return 0; fi
   if [ "$(_cfg codex_reviews)" = "disabled" ]; then echo "disabled"; return 0; fi
   if [ "$backend" = "disabled" ]; then echo "disabled"; return 0; fi
 
@@ -306,6 +318,12 @@ cmd_exec() {
   preflight_gate "$phase" "$repo_root"
 
   case "$backend" in
+    misconfigured)
+      # Refuse rather than fall back. Naming the key and the phase is the whole fix — the
+      # operator has one line to correct and no way to find it from a generic error.
+      local _key="outside_voice_loop"
+      [ "$phase" = "final_gate" ] && _key="outside_voice_gate"
+      die "$_key is set to an unrecognised value (want: codex|openrouter|disabled). Refusing to guess a backend — a wrong guess either bills the frontier price for every loop round or quietly weakens the gate. Fix ~/.gstack/config.yaml, or run: gstack-config set $_key <codex|openrouter|disabled>" ;;
     disabled) echo "OUTSIDE_VOICE_DISABLED phase=$phase" >&2; return 3 ;;
     codex)
       # WARN and continue, never die. The loop path always passes --findings-out, and

@@ -994,7 +994,12 @@ echo "GATE_MODE: $_GATE_MODE"
 ```
 
 Branch on it exactly as for `CODEX_MODE` above (`disabled` / `not_installed` /
-`not_authed` fall back to the Claude subagent; only `ready` proceeds).
+`not_authed` fall back to the Claude subagent; only `ready` proceeds). One extra
+state: `misconfigured` means `outside_voice_gate` (or `outside_voice_loop`) holds a
+value that is not `codex`, `openrouter` or `disabled`. Do NOT fall back silently —
+the adapter refuses with exit 2 and names the key to fix. Report it; a typo'd backend
+is a one-line config fix, and guessing one either bills the frontier price for every
+loop round or quietly weakens the gate.
 
 ```bash
 _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
@@ -1073,6 +1078,15 @@ elif [ "$_OV_EXIT" = "3" ]; then
   head -5 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
 elif [ "$_OV_EXIT" != "0" ]; then
   echo "[outside-voice exit $_OV_EXIT] $(head -1 "$TMPERR" 2>/dev/null || echo "no stderr captured")"
+  head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
+elif [ -s "$TMPERR" ]; then
+  # Exit 0 does NOT mean "nothing to tell you". A successful round still carries the notes that
+  # change what it MEANS: a truncated diff (findings cannot be assumed complete), a pre-flight
+  # gate that could not read the ledger and waved the round through, a findings block that had
+  # to be re-prompted, a served model different from the configured one. Printing stderr only
+  # on failure is exactly why those go unread — the round exits 0, the caller moves on, and the
+  # caveat dies in a tempfile. Surface them; they are a handful of lines.
+  echo "[outside-voice notes — the round SUCCEEDED; these qualify it]"
   head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
 fi
 ```
