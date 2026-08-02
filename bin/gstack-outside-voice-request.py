@@ -20,9 +20,23 @@ Exit codes:
 import json
 import os
 import re
+import secrets
 import sys
 import urllib.error
 import urllib.request
+
+# Per-request nonce in the fence marker.
+#
+# The diff is inlined into the prompt, and this reviewer reviews its own adapter — so the diff
+# now literally contains the contract text and example blocks. A fixed marker means the parser
+# cannot distinguish the model's ANSWER from an example it echoed out of the material under
+# review, and "last block wins" would happily pick the echo. More generally: any repository
+# whose diff happens to contain a fenced findings block could steer the count, which is a
+# prompt-injection channel straight into the stop condition.
+#
+# The nonce is generated per request, so nothing already in the diff can predict it.
+NONCE = secrets.token_hex(8)
+FENCE = "findings-json-" + NONCE
 
 model = os.environ["OR_MODEL"]
 prompt = open(os.environ["OR_PROMPT_FILE"], encoding="utf-8", errors="replace").read()
@@ -46,14 +60,14 @@ if diff_path:
 # and a grep for the first form returned ZERO while three P1s sat in the output. A count that
 # reads a formatting change as "no findings" ends the loop early, which is the one failure the
 # stop condition exists to prevent. So demand a machine-readable block and validate it.
-FINDINGS_CONTRACT = """
+FINDINGS_CONTRACT_TMPL = """
 
 ---
 MANDATORY OUTPUT CONTRACT — your response is parsed by a program.
 
 After your prose review, emit EXACTLY ONE fenced block, last in your response:
 
-```findings-json
+```%FENCE%
 {"p1": <int>, "p2": <int>, "p3": <int>,
  "findings": [{"severity": "P1", "title": "<short>", "location": "<file:line>"}]}
 ```
@@ -67,7 +81,7 @@ A missing or malformed block is treated as a FAILED review, not as a clean one.
 """
 
 if findings_path:
-    prompt = prompt + FINDINGS_CONTRACT
+    prompt = prompt + FINDINGS_CONTRACT_TMPL.replace("%FENCE%", FENCE)
 
 base_url = os.environ.get("GSTACK_OUTSIDE_VOICE_BASE_URL") or "https://openrouter.ai/api/v1"
 
@@ -125,7 +139,9 @@ def content_of(payload):
     return text
 
 
-BLOCK_RE = re.compile(r"```(?:findings-json|json)?\s*(\{.*?\})\s*```", re.S)
+# ONLY the nonce'd fence is accepted. A bare ```json or ```findings-json block is ignored,
+# because that is exactly what an echoed example from the diff would look like.
+BLOCK_RE = re.compile(r"```" + re.escape(FENCE) + r"\s*(\{.*?\})\s*```", re.S)
 
 
 def parse_findings(text):
@@ -136,7 +152,7 @@ def parse_findings(text):
     """
     blocks = BLOCK_RE.findall(text)
     if not blocks:
-        return None, "no fenced findings-json block found"
+        return None, "no fenced %s block found" % FENCE
     # Last block wins. The contract puts the block last, and prose above may quote the example
     # from the contract itself; taking the first would parse the illustration, not the answer.
     try:
@@ -212,7 +228,7 @@ if findings_path:
         sys.stderr.write("findings block unusable (%s) — re-prompting once for the block\n" % why)
         retry = ("Your previous reply did not carry a usable findings block (%s).\n\n"
                  "Reply with NOTHING but the fenced block, restating the findings you already "
-                 "made:\n\n```findings-json\n"
+                 "made:\n\n```" + FENCE + "\n"
                  "{\"p1\": <int>, \"p2\": <int>, \"p3\": <int>, \"findings\": "
                  "[{\"severity\": \"P1\", \"title\": \"<short>\", \"location\": \"<file:line>\"}]}"
                  "\n```\n\nYour previous reply was:\n\n%s" % (why, text[:12000]))
