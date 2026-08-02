@@ -206,15 +206,30 @@ def ask(message):
         sys.exit(1)
 
 
-def content_of(payload):
+def content_of(payload, on_fail=None):
+    """Extract the reply text, or exit 1 — recording the cost first.
+
+    `on_fail` writes the usage row before exiting. Both failure paths here describe a request
+    that REACHED the API and was billed: an `error` object and an empty `content` both arrive
+    with a usage block attached. Exiting without recording it made a paid round leave no trace
+    in the cost log at all, which is worse than the zero-vs-null problem it sits next to — a
+    missing row does not merely misreport the round, it denies the round happened. Observed
+    live: round 13 of this adapter's own loop returned an empty response after a billed call.
+    """
+    def bail():
+        if on_fail is not None:
+            on_fail()
+        sys.exit(1)
+
     if payload.get("error"):
         sys.stderr.write("openrouter error: %s\n" % json.dumps(payload["error"])[:2000])
-        sys.exit(1)
+        bail()
     choices = payload.get("choices") or []
     text = (choices[0].get("message", {}).get("content") if choices else "") or ""
     if not text.strip():
-        sys.stderr.write("openrouter returned an empty response\n")
-        sys.exit(1)
+        sys.stderr.write("openrouter returned an empty response — the call was billed but "
+                         "produced nothing. NOT a clean round: nothing was reviewed.\n")
+        bail()
     return text
 
 
@@ -342,11 +357,13 @@ def write_usage(prompt_tokens, completion_tokens, served_model):
 
 
 payload = ask(prompt)
-text = content_of(payload)
+# Read the cost BEFORE validating the content: every path below that can exit describes a
+# request that already reached the API and was already billed.
 usage = payload.get("usage") or {}
 p_tok = toks(usage, "prompt_tokens")
 c_tok = toks(usage, "completion_tokens")
 served = payload.get("model", model)
+text = content_of(payload, lambda: write_usage(p_tok, c_tok, served))
 
 findings = None
 if findings_path:
@@ -376,10 +393,10 @@ if findings_path:
                  # response from blowing the context window.
                  % (why, FENCE, text[:200000]))
         payload2 = ask(retry)
-        text2 = content_of(payload2)
         usage2 = payload2.get("usage") or {}
         p_tok = add_toks(p_tok, toks(usage2, "prompt_tokens"))
         c_tok = add_toks(c_tok, toks(usage2, "completion_tokens"))
+        text2 = content_of(payload2, lambda: write_usage(p_tok, c_tok, served))
         findings, why2 = parse_findings(text2)
         if findings is None:
             sys.stderr.write(
