@@ -144,6 +144,90 @@ with_timeout() {
   if [ -n "$_to" ]; then "$_to" "$_duration" "$@"; else "$@"; fi
 }
 
+# --- pre-flight sweep gate --------------------------------------------------
+#
+# Refuses the FIRST loop round on a lane until a structural pre-flight sweep is recorded.
+#
+# Why this is code and not a rule: the rule already existed. "Pre-flight sweep before round 1
+# on any multi-site edit" is written in the fleet CLAUDE.md, and the build that produced this
+# adapter skipped it — on the very day it was authored, by the session that had just read it —
+# and then logged SEVEN self-inflicted findings, which is precisely the round class the sweep
+# deletes for free. A rule that its own author skips while building the thing the rule is
+# about is not a rule, it is a note. This is the escalation the fleet doctrine prescribes:
+# when a promoted fact gets violated anyway, move it to enforcement rather than restating it.
+#
+# There is deliberately NO bypass flag. A flag is a remembered rule with extra steps, and the
+# escape hatch already exists and is the behaviour we want: record the sweep. If a lane
+# genuinely does not need one, `codex-round-log.sh --preflight --sites 0` says so on the
+# record, in one command, and is then auditable — unlike a flag, which leaves no trace.
+#
+# Scope: ONLY the first round (nothing logged yet). Once the loop is underway this never
+# fires again, so it cannot interrupt a run in progress.
+preflight_gate() {
+  local phase="$1" repo_root="$2"
+  [ "$phase" = "loop" ] || return 0
+
+  # The round ledger is fleet tooling, not gstack's. Upstream installs have no such file and
+  # must be unaffected — this adapter is headed for a third-party PR, so it cannot hard-depend
+  # on a claude-fleet-config binary. Absent tool => no gate, silently.
+  local _rl=""
+  local _c
+  for _c in "$HOME/Development/cfc-live/claude/bin/codex-round-log.sh" \
+            "$HOME/Development/claude-fleet-config/claude/bin/codex-round-log.sh"; do
+    [ -x "$_c" ] && { _rl="$_c"; break; }
+  done
+  [ -n "$_rl" ] || return 0
+
+  local _json
+  _json=$("$_rl" -C "$repo_root" --json 2>/dev/null) || {
+    # Tool present but unreadable: warn, do not block. Bricking a review loop over a broken
+    # instrument is a worse failure than the one being prevented.
+    echo "gstack-outside-voice: WARNING — could not read the round ledger; pre-flight gate not enforced." >&2
+    return 0
+  }
+
+  local _verdict
+  _verdict=$(printf '%s' "$_json" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("unreadable"); raise SystemExit(0)
+# Only gate round 1. rounds_logged > 0 means the loop is already running.
+if d.get("rounds_logged", 0) > 0:
+    print("ok")
+elif d.get("preflight_done"):
+    print("ok")
+else:
+    print("missing")
+' 2>/dev/null) || _verdict="unreadable"
+
+  case "$_verdict" in
+    ok) return 0 ;;
+    unreadable)
+      echo "gstack-outside-voice: WARNING — could not parse the round ledger; pre-flight gate not enforced." >&2
+      return 0 ;;
+  esac
+
+  # Name the missing step and the exact command. An error that says "do the sweep" without
+  # saying how is the same remembered-rule problem one layer down.
+  cat >&2 <<GATE
+gstack-outside-voice: REFUSING round 1 — no pre-flight sweep recorded for this lane.
+
+  The sweep is an EMPIRICAL enumeration, not a recollection: grep every site that asserts
+  the fact you changed — every print, preamble, assertion and doc line — and reconcile them
+  BEFORE spending a review round. It deletes the self-inflicted-contradiction round class at
+  zero token cost. Skipping it on this adapter's own build produced 7 self-inflicted findings.
+
+  Do the sweep, then record it:
+    $_rl -C "$repo_root" --preflight --sites <N> [--missed <N>] [--note "..."]
+
+  If this lane genuinely needs no sweep, say so on the record with --sites 0. There is no
+  bypass flag: a flag would leave no trace, and this gate exists because a rule left none.
+GATE
+  exit 5
+}
+
 # --- exec -------------------------------------------------------------------
 
 cmd_exec() {
@@ -192,6 +276,8 @@ cmd_exec() {
     echo "OUTSIDE_VOICE_DISABLED codex_reviews=disabled" >&2
     return 3
   fi
+
+  preflight_gate "$phase" "$repo_root"
 
   case "$backend" in
     disabled) echo "OUTSIDE_VOICE_DISABLED phase=$phase" >&2; return 3 ;;
