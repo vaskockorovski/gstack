@@ -114,3 +114,55 @@ Branch on the echoed \`CODEX_MODE\`:
 - **\`not_authed\`** — installed but no credentials. Print: "Codex installed but not authenticated — using Claude subagent. Run \`codex login\` or set \`$CODEX_API_KEY\`." Fall back to the Claude subagent path.
 - **\`ready\`** — run the Codex pass below.`;
 }
+
+/**
+ * Phase-aware outside-voice preflight.
+ *
+ * Same four-state contract as codexPreflight() — `disabled | not_installed |
+ * not_authed | ready`, echoed as `CODEX_MODE:` so every existing downstream branch
+ * still applies — but the backend is resolved per review PHASE from config
+ * (`outside_voice_loop` / `outside_voice_gate`) instead of being hardcoded to Codex.
+ *
+ * Why this is a separate export rather than a parameter on codexPreflight():
+ * codexPreflight()'s output is asserted byte-for-byte by golden fixtures and e2e
+ * substring checks. Leaving it untouched means adopting tiering is opt-in per call
+ * site, and a skill that has not been migrated keeps behaving exactly as it did.
+ *
+ * The heavy lifting lives in `bin/gstack-outside-voice probe`, so backend detection
+ * exists in exactly one place (shell), not duplicated between shell and TypeScript.
+ * The codex version-check side effect is preserved for the codex backend only —
+ * it is meaningless for a hosted API backend.
+ *
+ * `phase`:
+ *   - `loop`       — the iterative fix-verify loop (many rounds; the cheap tier).
+ *   - `final_gate` — the converged-artefact gate (frontier; repo access).
+ */
+export function outsideVoicePreflight(opts: {
+  phase: 'loop' | 'final_gate';
+  modeVar?: string;
+  disabledBehavior: 'skip-all' | 'codex-only';
+}): string {
+  const m = opts.modeVar ?? '_CODEX_MODE';
+  const disabledLine = opts.disabledBehavior === 'codex-only'
+    ? 'Skip the outside-voice passes only; the Claude adversarial subagent below STILL runs (it is free and fast). Print: "Outside-voice passes skipped (disabled) — running Claude adversarial only."'
+    : 'Skip this section entirely; do NOT fall back to a Claude subagent — disabled means no extra review step. Print: "Outside-voice review skipped (disabled). Re-enable: `gstack-config set codex_reviews enabled`."';
+  return `\`\`\`bash
+# Outside-voice preflight for the "${opts.phase}" phase: one block (functions sourced here don't persist).
+_TEL=$(~/.claude/skills/gstack/bin/gstack-config get telemetry 2>/dev/null || echo off)
+_OV_BACKEND=$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase ${opts.phase} 2>/dev/null || echo codex)
+${m}=$(~/.claude/skills/gstack/bin/gstack-outside-voice probe --phase ${opts.phase} 2>/dev/null || echo not_installed)
+# Version-check only applies to the codex backend; a hosted API has no local CLI.
+if [ "$_OV_BACKEND" = "codex" ] && [ "$${m}" = "ready" ]; then
+  source ~/.claude/skills/gstack/bin/gstack-codex-probe 2>/dev/null || true
+  _gstack_codex_version_check 2>/dev/null || true
+fi
+echo "OUTSIDE_VOICE_BACKEND: $_OV_BACKEND"
+echo "CODEX_MODE: $${m}"
+\`\`\`
+
+Branch on the echoed \`CODEX_MODE\` (the backend named by \`OUTSIDE_VOICE_BACKEND\` is what will actually run):
+- **\`disabled\`** — outside-voice review is off for this phase. ${disabledLine}
+- **\`not_installed\`** — the backend's client is absent (Codex CLI missing, or \`curl\` missing for a hosted backend). Print: "Outside voice not available for the ${opts.phase} phase — using Claude subagent." Fall back to the Claude subagent path.
+- **\`not_authed\`** — the backend is selected but has no credentials. For \`codex\`: run \`codex login\` or set \`$CODEX_API_KEY\`. For \`openrouter\`: set \`$OPENROUTER_API_KEY\`. **Do NOT silently reroute to the other backend** — a phase configured for the cheap tier must never quietly bill the frontier one, and a gate configured for frontier must never quietly downgrade. Print the cause and fall back to the Claude subagent path.
+- **\`ready\`** — run the outside-voice pass below via \`gstack-outside-voice exec --phase ${opts.phase}\`.`;
+}

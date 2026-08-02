@@ -96,6 +96,29 @@ CONFIG_HEADER='# gstack configuration — edit freely, changes take effect on ne
 #                           #   /document-release skip the outside-voice step entirely.
 #                           #   An invalid value is REJECTED (existing value preserved) so
 #                           #   a typo cannot silently turn paid Codex calls on or off.
+#
+# ─── Tiered outside voice ────────────────────────────────────────────
+# Which backend reviews at which PHASE. The iterative fix-verify loop and the
+# final gate are priced very differently, so they are configured separately.
+# Both default to codex — an unconfigured install behaves exactly as before.
+# Invalid values are REJECTED (existing value preserved), same rule as codex_reviews:
+# a typo must not silently reroute a phase to a costlier backend, nor the GATE to a
+# cheaper one, which would quietly weaken the review rather than just overspend.
+#
+# outside_voice_loop: codex # codex | openrouter | disabled
+#                           #   Backend for the ITERATIVE fix-verify loop (many rounds).
+#                           #   openrouter runs a cheap model here. The loop keeps the
+#                           #   SAME stop condition (no P1, no P2) — this is a price
+#                           #   change, not a rigour change.
+# outside_voice_gate: codex # codex | openrouter | disabled
+#                           #   Backend for the FINAL gate on the converged artefact.
+#                           #   Keep on codex: it has repo access and a different training
+#                           #   lineage, which is precisely what the gate is buying.
+# outside_voice_loop_model: minimax/minimax-m3
+#                           #   Model id for an openrouter loop. Needs a LARGE context
+#                           #   window: an openrouter backend has no tools, so the diff is
+#                           #   inlined into the prompt rather than read from disk.
+#                           #   Requires $OPENROUTER_API_KEY. Empty value is rejected.
 # gstack_contributor: false # true = file field reports when gstack misbehaves
 # skip_eng_review: false    # true = skip eng review gate in /ship (not recommended)
 #
@@ -123,6 +146,11 @@ lookup_default() {
     checkpoint_push) echo "false" ;;
     explain_level) echo "default" ;;
     codex_reviews) echo "enabled" ;;
+    # Tiered outside voice. Defaults are BOTH codex so an install that has never
+    # configured these behaves exactly as it did before the adapter existed.
+    outside_voice_loop) echo "codex" ;;
+    outside_voice_gate) echo "codex" ;;
+    outside_voice_loop_model) echo "minimax/minimax-m3" ;;
     gstack_contributor) echo "false" ;;
     skip_eng_review) echo "false" ;;
     workspace_root) echo "$HOME/conductor/workspaces" ;;
@@ -321,6 +349,25 @@ case "${1:-}" in
       echo "Error: codex_reviews '$VALUE' not recognized. Valid values: enabled, disabled. Existing value left unchanged." >&2
       exit 1
     fi
+    # outside_voice_* select which backend spends money on which review phase, so they
+    # follow codex_reviews' reject-and-leave-unchanged rule rather than warn-and-default:
+    # a typo must never silently reroute a phase (either to a costlier backend, or to a
+    # cheaper one on the gate, which would quietly weaken the review).
+    if { [ "$KEY" = "outside_voice_loop" ] || [ "$KEY" = "outside_voice_gate" ]; } \
+       && [ "$VALUE" != "codex" ] && [ "$VALUE" != "openrouter" ] && [ "$VALUE" != "disabled" ]; then
+      echo "Error: $KEY '$VALUE' not recognized. Valid values: codex, openrouter, disabled. Existing value left unchanged." >&2
+      exit 1
+    fi
+    # A model id is free-form (the catalogue changes weekly), but a BLANK one would be
+    # stored, then read back by `get` as empty, then silently replaced by the built-in
+    # default — billing a model the user did not choose while looking configured. The
+    # whitespace strip matters: `set <key> ""` is caught earlier by the arity guard, but
+    # `set <key> "   "` passes it, so checking [ -z "$VALUE" ] alone is unreachable.
+    if [ "$KEY" = "outside_voice_loop_model" ] \
+       && [ -z "$(printf '%s' "$VALUE" | tr -d '[:space:]')" ]; then
+      echo "Error: outside_voice_loop_model cannot be blank. Existing value left unchanged." >&2
+      exit 1
+    fi
     mkdir -p "$STATE_DIR"
     # Write annotated header on first creation
     if [ ! -f "$CONFIG_FILE" ]; then
@@ -350,7 +397,8 @@ case "${1:-}" in
     for KEY in proactive routing_declined telemetry auto_upgrade update_check \
                skill_prefix checkpoint_mode checkpoint_push explain_level \
                codex_reviews gstack_contributor skip_eng_review workspace_root \
-               artifacts_sync_mode artifacts_sync_mode_prompted plan_tune_hooks; do
+               artifacts_sync_mode artifacts_sync_mode_prompted plan_tune_hooks \
+               outside_voice_loop outside_voice_gate outside_voice_loop_model; do
       VALUE=$(grep -E "^${KEY}:" "$CONFIG_FILE" 2>/dev/null | tail -1 | awk '{print $2}' | tr -d '[:space:]' || true)
       SOURCE="default"
       if [ -n "$VALUE" ]; then
@@ -366,7 +414,8 @@ case "${1:-}" in
     for KEY in proactive routing_declined telemetry auto_upgrade update_check \
                skill_prefix checkpoint_mode checkpoint_push explain_level \
                codex_reviews gstack_contributor skip_eng_review workspace_root \
-               artifacts_sync_mode artifacts_sync_mode_prompted plan_tune_hooks; do
+               artifacts_sync_mode artifacts_sync_mode_prompted plan_tune_hooks \
+               outside_voice_loop outside_voice_gate outside_voice_loop_model; do
       printf '  %-24s %s\n' "$KEY:" "$(lookup_default "$KEY")"
     done
     ;;

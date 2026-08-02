@@ -1,0 +1,324 @@
+#!/usr/bin/env bash
+# gstack-outside-voice — one command for every external review call.
+#
+# Replaces the hardcoded `codex exec` scattered across 12+ skills with a single
+# adapter that resolves a BACKEND per review PHASE, so the iterative loop can run
+# on a cheap model while the final gate stays on a frontier one.
+#
+# Usage:
+#   gstack-outside-voice exec --phase <loop|final_gate> --prompt-file <f> [opts]
+#   gstack-outside-voice backend --phase <loop|final_gate>   — print resolved backend
+#   gstack-outside-voice probe   --phase <loop|final_gate>   — print readiness mode
+#
+# exec options:
+#   --repo-root <dir>       repo to run against (default: git toplevel)
+#   --effort <low|medium|high>   reasoning effort (default: high)
+#   --repo-context <diff|none>   what a TOOL-LESS backend is given (default: diff)
+#   --base <ref>            base ref for the inlined diff (default: origin/main)
+#   --timeout <seconds>     wall-clock cap (default: 330)
+#   --label <name>          tag for the usage log (default: phase name)
+#
+# Backends:
+#   codex       — `codex exec`, WITH repo access (reads files, runs git itself)
+#   openrouter  — OpenRouter chat completion, TOOL-LESS: it can only see what is
+#                 inlined into the prompt. See "Scope asymmetry" below.
+#
+# Scope asymmetry (deliberate, disclosed — do not silently "fix" by degrading codex):
+#   The codex backend explores the repository beyond the diff, which is where a
+#   real share of deep-round P1s come from. A chat-completion backend has no tools
+#   and no filesystem, so `--repo-context diff` inlines the diff for it. The loop is
+#   therefore diff-scoped and the gate repo-scoped. That gap is a reason the frontier
+#   gate keeps earning its keep, not a defect to paper over.
+#
+# Never echoes $OPENROUTER_API_KEY. Usage/cost rows go to
+#   ~/.gstack/analytics/outside-voice.jsonl   (tokens + model + phase; never prompt text)
+set -euo pipefail
+
+_SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+_CONFIG="$_SELF_DIR/gstack-config"
+_STATE_DIR="${GSTACK_STATE_ROOT:-${GSTACK_HOME:-${GSTACK_STATE_DIR:-$HOME/.gstack}}}"
+
+# Max bytes of diff inlined for a tool-less backend. Generous: the intended loop
+# voices carry ~1M-token windows. Exceeding it truncates LOUDLY (see below) —
+# a silently truncated review is indistinguishable from a clean one.
+_MAX_DIFF_BYTES="${GSTACK_OUTSIDE_VOICE_MAX_DIFF_BYTES:-1500000}"
+
+_cfg() { "$_CONFIG" get "$1" 2>/dev/null || echo ""; }
+
+die() { echo "gstack-outside-voice: $*" >&2; exit 2; }
+
+# --- backend resolution -----------------------------------------------------
+
+resolve_backend() {
+  local phase="$1" backend=""
+  case "$phase" in
+    loop)       backend="$(_cfg outside_voice_loop)" ;;
+    final_gate) backend="$(_cfg outside_voice_gate)" ;;
+    *) die "unknown phase '$phase' (want: loop|final_gate)" ;;
+  esac
+  # An unset/unknown value resolves to codex — an unconfigured install must behave
+  # exactly as it did before this adapter existed.
+  case "$backend" in
+    codex|openrouter|disabled) printf '%s' "$backend" ;;
+    *) printf 'codex' ;;
+  esac
+}
+
+# --- readiness probe --------------------------------------------------------
+# Mirrors the four-state contract of the old codexPreflight so callers branch the
+# same way: disabled | not_installed | not_authed | ready.
+probe() {
+  local phase="$1" backend
+  backend="$(resolve_backend "$phase")"
+
+  if [ "$(_cfg codex_reviews)" = "disabled" ]; then echo "disabled"; return 0; fi
+  if [ "$backend" = "disabled" ]; then echo "disabled"; return 0; fi
+
+  if [ "$backend" = "codex" ]; then
+    command -v codex >/dev/null 2>&1 || { echo "not_installed"; return 0; }
+    local _k1 _k2
+    _k1=$(printf '%s' "${CODEX_API_KEY:-}" | tr -d '[:space:]')
+    _k2=$(printf '%s' "${OPENAI_API_KEY:-}" | tr -d '[:space:]')
+    if [ -n "$_k1" ] || [ -n "$_k2" ] || [ -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ]; then
+      echo "ready"; return 0
+    fi
+    echo "not_authed"; return 0
+  fi
+
+  # openrouter
+  command -v curl >/dev/null 2>&1 || { echo "not_installed"; return 0; }
+  local _ork
+  _ork=$(printf '%s' "${OPENROUTER_API_KEY:-}" | tr -d '[:space:]')
+  # Fail LOUD, not silent: an absent key on a phase explicitly configured for
+  # openrouter is a misconfiguration, and must never quietly bill the frontier
+  # backend instead. The caller decides what to do; we only refuse to guess.
+  [ -z "$_ork" ] && { echo "not_authed"; return 0; }
+  echo "ready"
+}
+
+# --- usage log --------------------------------------------------------------
+
+log_usage() {
+  # $1 backend  $2 model  $3 phase  $4 label  $5 prompt_tokens  $6 completion_tokens
+  # $7 status. NEVER records prompt text, diff content, or credentials.
+  [ "$(_cfg telemetry)" = "off" ] && return 0
+  mkdir -p "$_STATE_DIR/analytics" 2>/dev/null || return 0
+  local _ts
+  _ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
+  printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"status":"%s","ts":"%s"}\n' \
+    "$1" "$2" "$3" "$4" "${5:-0}" "${6:-0}" "$7" "$_ts" \
+    >> "$_STATE_DIR/analytics/outside-voice.jsonl" 2>/dev/null || true
+}
+
+# --- timeout wrapper (gtimeout → timeout → unwrapped) -----------------------
+
+with_timeout() {
+  local _duration="$1"; shift
+  local _to
+  _to=$(command -v gtimeout 2>/dev/null || command -v timeout 2>/dev/null || echo "")
+  if [ -n "$_to" ]; then "$_to" "$_duration" "$@"; else "$@"; fi
+}
+
+# --- exec -------------------------------------------------------------------
+
+cmd_exec() {
+  local phase="" prompt_file="" repo_root="" effort="high" repo_context="diff"
+  local base="origin/main" timeout_s="330" label=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --phase)        phase="${2:?--phase needs a value}"; shift 2 ;;
+      --prompt-file)  prompt_file="${2:?--prompt-file needs a value}"; shift 2 ;;
+      --repo-root)    repo_root="${2:?}"; shift 2 ;;
+      --effort)       effort="${2:?}"; shift 2 ;;
+      --repo-context) repo_context="${2:?}"; shift 2 ;;
+      --base)         base="${2:?}"; shift 2 ;;
+      --timeout)      timeout_s="${2:?}"; shift 2 ;;
+      --label)        label="${2:?}"; shift 2 ;;
+      *) die "unknown option '$1'" ;;
+    esac
+  done
+
+  [ -n "$phase" ] || die "--phase is required"
+  [ -n "$prompt_file" ] || die "--prompt-file is required"
+  [ -f "$prompt_file" ] || die "prompt file not found: $prompt_file"
+  case "$effort" in low|medium|high) ;; *) die "--effort must be low|medium|high" ;; esac
+  case "$repo_context" in diff|none) ;; *) die "--repo-context must be diff|none" ;; esac
+  [ -n "$label" ] || label="$phase"
+
+  if [ -z "$repo_root" ]; then
+    repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+      || die "not in a git repo and --repo-root not given"
+  fi
+
+  local backend
+  backend="$(resolve_backend "$phase")"
+
+  case "$backend" in
+    disabled) echo "OUTSIDE_VOICE_DISABLED" >&2; return 3 ;;
+    codex)      exec_codex      "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" ;;
+    openrouter) exec_openrouter "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$repo_context" "$base" ;;
+  esac
+}
+
+exec_codex() {
+  local phase="$1" prompt_file="$2" repo_root="$3" effort="$4" timeout_s="$5" label="$6"
+  local rc=0
+  # Flags mirror the previous inline call sites exactly, minus the deprecated
+  # `--enable web_search_cached` (codex 0.124.0+: web search is on by default,
+  # and its deprecation warning crowded out real errors — see VAS-1926).
+  with_timeout "$timeout_s" codex exec "$(cat "$prompt_file")" \
+    -C "$repo_root" -s read-only \
+    -c "model_reasoning_effort=\"$effort\"" < /dev/null || rc=$?
+  if [ "$rc" -eq 124 ]; then
+    log_usage codex "" "$phase" "$label" 0 0 timeout
+  elif [ "$rc" -ne 0 ]; then
+    log_usage codex "" "$phase" "$label" 0 0 "error_$rc"
+  else
+    log_usage codex "" "$phase" "$label" 0 0 ok
+  fi
+  return "$rc"
+}
+
+exec_openrouter() {
+  local phase="$1" prompt_file="$2" repo_root="$3" effort="$4" timeout_s="$5"
+  local label="$6" repo_context="$7" base="$8"
+
+  local _ork
+  _ork=$(printf '%s' "${OPENROUTER_API_KEY:-}" | tr -d '[:space:]')
+  [ -n "$_ork" ] || die "phase '$phase' is configured for openrouter but OPENROUTER_API_KEY is unset. Refusing to silently fall back to a paid frontier backend."
+
+  local model
+  model="$(_cfg outside_voice_loop_model)"
+  [ -n "$model" ] || model="minimax/minimax-m3"
+
+  # Tool-less backend: inline the diff, or it reviews nothing at all.
+  local diff_file=""
+  local truncated="no"
+  if [ "$repo_context" = "diff" ]; then
+    diff_file=$(mktemp "${TMPDIR:-/tmp}/gstack-ov-diff-XXXXXXXX.txt")
+    # shellcheck disable=SC2086
+    if ! git -C "$repo_root" diff "$base"...HEAD > "$diff_file" 2>/dev/null; then
+      git -C "$repo_root" diff HEAD > "$diff_file" 2>/dev/null || true
+    fi
+    local _sz
+    _sz=$(wc -c < "$diff_file" | tr -d '[:space:]')
+    if [ "${_sz:-0}" -gt "$_MAX_DIFF_BYTES" ]; then
+      truncated="yes"
+      head -c "$_MAX_DIFF_BYTES" "$diff_file" > "$diff_file.cut" && mv "$diff_file.cut" "$diff_file"
+    fi
+  fi
+
+  local resp_file
+  resp_file=$(mktemp "${TMPDIR:-/tmp}/gstack-ov-resp-XXXXXXXX.json")
+
+  local rc=0
+  OR_MODEL="$model" OR_PROMPT_FILE="$prompt_file" OR_DIFF_FILE="$diff_file" \
+  OR_TRUNCATED="$truncated" OR_EFFORT="$effort" OR_RESP="$resp_file" \
+  GSTACK_OUTSIDE_VOICE_BASE_URL="${GSTACK_OUTSIDE_VOICE_BASE_URL:-}" \
+  with_timeout "$timeout_s" python3 -c '
+import json, os, sys, urllib.request, urllib.error
+
+model = os.environ["OR_MODEL"]
+prompt = open(os.environ["OR_PROMPT_FILE"], encoding="utf-8", errors="replace").read()
+diff_path = os.environ.get("OR_DIFF_FILE") or ""
+truncated = os.environ.get("OR_TRUNCATED") == "yes"
+
+if diff_path:
+    diff = open(diff_path, encoding="utf-8", errors="replace").read()
+    note = ""
+    if truncated:
+        # Never a silent cap: the model is told, and so is the reader (stderr below).
+        note = ("\n\n!! NOTE: the diff below was TRUNCATED to fit. Findings cannot be "
+                "assumed complete for the omitted tail.\n")
+    prompt = (prompt + note + "\n\nYou have NO filesystem or tool access. Review only "
+              "the diff between the delimiters.\n\nDIFF_START\n" + diff + "\nDIFF_END\n")
+
+body = json.dumps({
+    "model": model,
+    "messages": [{"role": "user", "content": prompt}],
+}).encode("utf-8")
+
+base_url = os.environ.get("GSTACK_OUTSIDE_VOICE_BASE_URL") or "https://openrouter.ai/api/v1"
+req = urllib.request.Request(
+    base_url.rstrip("/") + "/chat/completions",
+    data=body,
+    headers={
+        "Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"],
+        "Content-Type": "application/json",
+        "X-Title": "gstack-outside-voice",
+    },
+)
+try:
+    with urllib.request.urlopen(req) as r:
+        payload = json.load(r)
+except urllib.error.HTTPError as e:
+    # Print the API error WITHOUT echoing the request (which carries no secret,
+    # but may carry source). Never print the Authorization header.
+    sys.stderr.write("openrouter HTTP %s: %s\n" % (e.code, e.read().decode("utf-8", "replace")[:2000]))
+    sys.exit(1)
+except Exception as e:
+    sys.stderr.write("openrouter request failed: %s\n" % e)
+    sys.exit(1)
+
+if "error" in payload and payload.get("error"):
+    sys.stderr.write("openrouter error: %s\n" % json.dumps(payload["error"])[:2000])
+    sys.exit(1)
+
+choices = payload.get("choices") or []
+text = (choices[0].get("message", {}).get("content") if choices else "") or ""
+if not text.strip():
+    sys.stderr.write("openrouter returned an empty response\n")
+    sys.exit(1)
+
+sys.stdout.write(text)
+if not text.endswith("\n"):
+    sys.stdout.write("\n")
+
+usage = payload.get("usage") or {}
+json.dump({"prompt_tokens": usage.get("prompt_tokens", 0),
+           "completion_tokens": usage.get("completion_tokens", 0),
+           "model": payload.get("model", model)},
+          open(os.environ["OR_RESP"], "w"))
+' || rc=$?
+
+  if [ "$truncated" = "yes" ]; then
+    echo "gstack-outside-voice: WARNING — diff exceeded ${_MAX_DIFF_BYTES} bytes and was truncated; this review does NOT cover the omitted tail." >&2
+  fi
+
+  local ptok=0 ctok=0 rmodel="$model"
+  if [ -s "$resp_file" ]; then
+    ptok=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("prompt_tokens",0))' "$resp_file" 2>/dev/null || echo 0)
+    ctok=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("completion_tokens",0))' "$resp_file" 2>/dev/null || echo 0)
+    rmodel=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("model",""))' "$resp_file" 2>/dev/null || echo "$model")
+  fi
+
+  if [ "$rc" -eq 124 ]; then
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout
+  elif [ "$rc" -ne 0 ]; then
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" "error_$rc"
+  else
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" ok
+  fi
+
+  rm -f "$resp_file" ${diff_file:+"$diff_file"}
+  return "$rc"
+}
+
+# --- dispatch ---------------------------------------------------------------
+
+[ $# -gt 0 ] || die "usage: gstack-outside-voice <exec|backend|probe> [options]"
+_CMD="$1"; shift
+
+case "$_CMD" in
+  exec) cmd_exec "$@" ;;
+  backend)
+    [ "${1:-}" = "--phase" ] || die "usage: gstack-outside-voice backend --phase <loop|final_gate>"
+    resolve_backend "${2:?}"; echo ""
+    ;;
+  probe)
+    [ "${1:-}" = "--phase" ] || die "usage: gstack-outside-voice probe --phase <loop|final_gate>"
+    probe "${2:?}"
+    ;;
+  *) die "unknown command '$_CMD' (want: exec|backend|probe)" ;;
+esac
