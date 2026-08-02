@@ -112,6 +112,10 @@ After this, every subsequent bash block in this skill uses `"$PLAN_ROOT"` and
 Parse the user's input to determine which mode to run:
 
 1. `/codex review` or `/codex review <instructions>` — **Review mode** (Step 2A)
+1a. `/codex review --loop` — **Review mode, loop phase** (Step 2A, loop path): runs the
+    round on the backend configured for the iterative loop (`outside_voice_loop`) rather
+    than the final gate. Same stop condition; cheaper rounds. Without the flag, review
+    runs the final gate exactly as before.
 2. `/codex challenge` or `/codex challenge <focus>` — **Challenge mode** (Step 2B)
 3. `/codex` with no arguments — **Auto-detect:**
    - Check for a diff (with fallback if origin isn't available):
@@ -194,6 +198,49 @@ fi
 ```
 
 If the user passed `--xhigh`, use `"xhigh"` instead of `"high"`.
+
+**Loop path (user typed `/codex review --loop`):** route through the outside-voice
+adapter at the `loop` phase, so the iterative fix-verify rounds run on whichever
+backend `outside_voice_loop` names. This exists because the review loop and the
+final gate have very different economics: the loop runs many rounds against an
+evolving artefact, while the gate reviews a converged one. **The stop condition is
+unchanged — no P1 and no P2.** This is a price change, not a rigour change, and it
+is not a licence to stop early.
+
+```bash
+_REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
+_LOOP_PROMPT=$(mktemp "$TMP_ROOT/gstack-ov-prompt-XXXXXX.txt")
+cat > "$_LOOP_PROMPT" <<'PROMPT'
+Review the changes on this branch against the base branch. Find defects that would
+break in production: edge cases, race conditions, security holes, resource leaks,
+silent failure paths, and data-corruption paths. Be adversarial and specific.
+Label each finding P1 / P2 / P3 and reference file:line. No compliments.
+PROMPT
+~/.claude/skills/gstack/bin/gstack-outside-voice exec \
+  --phase loop --prompt-file "$_LOOP_PROMPT" --repo-root "$_REPO_ROOT" \
+  --base "origin/<base>" --effort high --timeout 330 < /dev/null 2>"$TMPERR"
+_OV_EXIT=$?
+rm -f "$_LOOP_PROMPT"
+if [ "$_OV_EXIT" = "124" ]; then
+  _gstack_codex_log_event "codex_timeout" "330"
+elif [ "$_OV_EXIT" != "0" ]; then
+  echo "[outside-voice exit $_OV_EXIT] $(head -1 "$TMPERR" 2>/dev/null || echo "no stderr captured")"
+  head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
+fi
+```
+
+Two things about this path that are easy to get wrong:
+
+- **A hosted backend has no tools.** It cannot run `git`, open files, or explore the
+  repo — the adapter inlines the diff into the prompt instead. So the loop is
+  **diff-scoped** while the frontier gate is **repo-scoped**, and a defect only
+  visible in an untouched file is exactly what the gate is still there to catch.
+  Do not read a clean loop round as a clean gate round.
+- **An oversized diff is truncated**, with a warning on stderr and a notice inside
+  the prompt. If you see that warning, the round did not cover the whole change.
+
+When logging the round, pass the voice you actually used, not the default:
+`codex-round-log.sh --voice <name> --p1 N …`.
 
 **Custom-instructions path (user typed `/codex review <focus>`):** `codex exec`
 with the diff written to a tempfile and inlined into the prompt. We preserve
