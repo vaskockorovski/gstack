@@ -267,8 +267,20 @@ exec_openrouter() {
   # success path meant a `timeout` SIGTERM — the routine outcome this script is wrapped in —
   # left that content in /tmp indefinitely. Trap covers the signal paths; the explicit rm at
   # the end stays, so behaviour is unchanged when nothing goes wrong.
+  # Both files, quoted the same simple way. The previous form used
+  # ${diff_file:+\"'$diff_file'\"}, which expands to a NESTED-quoted word — `rm -f` then
+  # receives a filename containing literal quote characters, deletes nothing, and the diff
+  # (full source of every changed file) survives. It looked correct and tested clean only
+  # because the earlier, simpler trap was still installed at the moment of the test.
+  # A trap is a string evaluated later: verify it by firing it, not by reading it.
+  # `rm -f ''` is harmless, but naming the empty case keeps the intent readable when
+  # --repo-context none means there is no diff file at all.
   # shellcheck disable=SC2064
-  trap "rm -f '$resp_file' ${diff_file:+\"'$diff_file'\"}" EXIT INT TERM
+  if [ -n "$diff_file" ]; then
+    trap "rm -f '$resp_file' '$diff_file'" EXIT INT TERM
+  else
+    trap "rm -f '$resp_file'" EXIT INT TERM
+  fi
 
   local rc=0
   OR_MODEL="$model" OR_PROMPT_FILE="$prompt_file" OR_DIFF_FILE="$diff_file" \
@@ -299,6 +311,18 @@ body = json.dumps({
 }).encode("utf-8")
 
 base_url = os.environ.get("GSTACK_OUTSIDE_VOICE_BASE_URL") or "https://openrouter.ai/api/v1"
+# The Authorization header rides on this request. A plain-http override would put the API key
+# on the wire in clear text, and the override exists mainly so tests can point at a local
+# stub — so allow http ONLY for loopback, and refuse it anywhere else rather than warn.
+# A warning here would be printed to a stderr no one reads until after the key has leaked.
+_scheme_host = base_url.split("://", 1)
+if len(_scheme_host) == 2 and _scheme_host[0] == "http":
+    _host = _scheme_host[1].split("/", 1)[0].split(":", 1)[0]
+    if _host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+        sys.stderr.write(
+            "refusing to send the API key over plain http to %r — use https, or point at "
+            "loopback for testing\n" % _host)
+        sys.exit(1)
 req = urllib.request.Request(
     base_url.rstrip("/") + "/chat/completions",
     data=body,
