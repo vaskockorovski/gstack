@@ -1053,6 +1053,12 @@ Review the changes on this branch against origin/<base>. Find defects that would
 break in production: edge cases, race conditions, security holes, resource leaks,
 silent failure paths, and data-corruption paths. Be adversarial and specific.
 Label each finding P1 / P2 / P3 and reference file:line. No compliments.
+
+Keep each finding to at most three sentences: what breaks, the concrete trigger, and
+where. No preamble, no summary section, no restating the diff back. Brevity here is not
+cosmetic — a reasoning model's OUTPUT budget is the binding constraint on a large diff,
+and a review that exhausts it emits nothing at all and still bills in full. Spend the
+budget on finding defects, not on describing them at length.
 PROMPT
 _OV_FINDINGS=$(mktemp "$TMP_ROOT/gstack-ov-findings-XXXXXX.json")
 ~/.claude/skills/gstack/bin/gstack-outside-voice exec \
@@ -1092,12 +1098,19 @@ fi
 # Emit the counts and delete the file HERE, in the block that created it. Anything that
 # defers cleanup to a later step is a step that can be skipped — three rounds reported this
 # file as leaked while the fix lived outside this block.
-if [ -f "$_OV_FINDINGS" ]; then
+# -s, not -f: mktemp CREATED this file, so -f is true even on the paths where the reviewer
+# never ran (disabled, misconfigured, preflight refusal). Those printed an empty JSON, which
+# reads as "no findings" — the nothing-wrong/nothing-looked-at equivalence this whole contract
+# exists to break — and made the else branch below unreachable. Gate on the exit code too:
+# a non-zero round established nothing, whatever is on disk.
+if [ "$_OV_EXIT" = "0" ] && [ -s "$_OV_FINDINGS" ]; then
   echo "OV_FINDINGS_JSON: $(cat "$_OV_FINDINGS")"
-  rm -f "$_OV_FINDINGS"
+elif [ "$_OV_EXIT" = "0" ]; then
+  echo "OV_FINDINGS_JSON: <none — backend was codex; read its own output above for severities>"
 else
-  echo "OV_FINDINGS_JSON: <none — backend was codex, or the round failed>"
+  echo "OV_FINDINGS_JSON: <none — the round FAILED (exit $_OV_EXIT). NOT a clean round; nothing was established>"
 fi
+rm -f "$_OV_FINDINGS"
 ```
 
 **If `$_OV_FINDINGS` does not exist after a successful run, the backend was `codex`** — it owns
