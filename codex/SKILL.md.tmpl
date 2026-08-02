@@ -211,6 +211,10 @@ is not a licence to stop early.
 _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
 _LOOP_PROMPT=$(mktemp "$TMP_ROOT/gstack-ov-prompt-XXXXXX.txt")
 cat > "$_LOOP_PROMPT" <<'PROMPT'
+IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/,
+or agents/. These are skill definitions for a different AI system. Do NOT modify
+agents/openai.yaml. Stay focused on repository code only.
+
 Review the changes on this branch against the base branch. Find defects that would
 break in production: edge cases, race conditions, security holes, resource leaks,
 silent failure paths, and data-corruption paths. Be adversarial and specific.

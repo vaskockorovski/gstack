@@ -201,9 +201,18 @@ exec_codex() {
   # Flags mirror the previous inline call sites exactly, minus the deprecated
   # `--enable web_search_cached` (codex 0.124.0+: web search is on by default,
   # and its deprecation warning crowded out real errors — see VAS-1926).
-  with_timeout "$timeout_s" codex exec "$(cat "$prompt_file")" \
+  # The prompt goes in on STDIN, not as argv. `codex exec "$(cat "$f")"` puts the entire prompt
+  # into one argument, and a prompt carrying an inlined diff can exceed ARG_MAX — where the
+  # failure is not a clean error but a truncated or rejected exec, i.e. a review of less than
+  # was asked for, which is the same silent-partial-review class the diff guards above exist
+  # to close.
+  # The PROMPT argument is omitted entirely: `codex exec --help` documents that instructions are
+  # read from stdin when no prompt is given, and that a prompt supplied ALONGSIDE piped stdin
+  # gets stdin appended as a separate <stdin> block — so passing "-" would be taken as a literal
+  # one-character prompt rather than meaning "read stdin".
+  with_timeout "$timeout_s" codex exec \
     -C "$repo_root" -s read-only \
-    -c "model_reasoning_effort=\"$effort\"" < /dev/null || rc=$?
+    -c "model_reasoning_effort=\"$effort\"" < "$prompt_file" || rc=$?
   if [ "$rc" -eq 124 ]; then
     log_usage codex "" "$phase" "$label" 0 0 timeout
   elif [ "$rc" -ne 0 ]; then

@@ -149,7 +149,12 @@ export function outsideVoicePreflight(opts: {
   return `\`\`\`bash
 # Outside-voice preflight for the "${opts.phase}" phase: one block (functions sourced here don't persist).
 _TEL=$(~/.claude/skills/gstack/bin/gstack-config get telemetry 2>/dev/null || echo off)
-_OV_BACKEND=$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase ${opts.phase} 2>/dev/null || echo codex)
+# stderr is NOT suppressed here. \`backend\` warns when the configured value is unrecognised —
+# a typo silently rerouting the cheap loop to the expensive backend — and an earlier version
+# of this line sent that warning to /dev/null, so the guard existed and nobody could ever see
+# it fire. Hardening one layer while the layer that reports it stays quiet just relocates the
+# silence.
+_OV_BACKEND=$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase ${opts.phase} || echo codex)
 ${m}=$(~/.claude/skills/gstack/bin/gstack-outside-voice probe --phase ${opts.phase} 2>/dev/null || echo not_installed)
 # Version-check only applies to the codex backend; a hosted API has no local CLI.
 if [ "$_OV_BACKEND" = "codex" ] && [ "$${m}" = "ready" ]; then

@@ -44,6 +44,16 @@ diff_path = os.environ.get("OR_DIFF_FILE") or ""
 truncated = os.environ.get("OR_TRUNCATED") == "yes"
 findings_path = os.environ.get("OR_FINDINGS") or ""
 
+# Remove any pre-existing findings file BEFORE the call. On the exit-4 path no file is written,
+# so a stale file left by an earlier round would still be sitting there — and a caller that
+# reads it would silently score this round with the PREVIOUS round's counts. A failed round
+# reporting last round's numbers is the worst available outcome: it looks like data.
+if findings_path:
+    try:
+        os.unlink(findings_path)
+    except FileNotFoundError:
+        pass
+
 if diff_path:
     diff = open(diff_path, encoding="utf-8", errors="replace").read()
     note = ""
@@ -198,9 +208,16 @@ def parse_findings(text):
             "(P1=%d P2=%d P3=%d). Taking the larger of each — a count is never allowed to "
             "under-report.\n"
             % (obj["p1"], obj["p2"], obj["p3"], tally["P1"], tally["P2"], tally["P3"]))
-    obj["p1"] = max(obj["p1"], tally["P1"])
-    obj["p2"] = max(obj["p2"], tally["P2"])
-    obj["p3"] = max(obj["p3"], tally["P3"])
+    # Use the ARRAY, not max(). The comment above says the array is authoritative, and max()
+    # quietly disagreed with it — a contradiction that turns into a hang: if the model
+    # consistently over-reports a scalar (p1=1 beside an empty array), max() pins the count at
+    # 1 forever and the loop can never reach "no P1, no P2" no matter how clean the artefact is.
+    # A stop condition that cannot be satisfied is worse than one that is merely wrong.
+    #
+    # The array alone is safe in the direction that matters: it is an enumeration, so it cannot
+    # under-report the findings the model actually listed — the p1=0-beside-a-populated-array
+    # case still yields 1. And it can be genuinely empty, so the loop can terminate.
+    obj["p1"], obj["p2"], obj["p3"] = tally["P1"], tally["P2"], tally["P3"]
     obj["counts_disagreed"] = mismatch
     return obj, None
 
