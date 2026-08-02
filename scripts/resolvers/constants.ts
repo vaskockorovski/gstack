@@ -118,9 +118,10 @@ Branch on the echoed \`CODEX_MODE\`:
 /**
  * Phase-aware outside-voice preflight.
  *
- * Same four-state contract as codexPreflight() — `disabled | not_installed |
- * not_authed | ready`, echoed as `CODEX_MODE:` so every existing downstream branch
- * still applies — but the backend is resolved per review PHASE from config
+ * codexPreflight()'s four states — `disabled | not_installed | not_authed | ready`,
+ * echoed as `CODEX_MODE:` so every existing downstream branch still applies — plus a
+ * FIFTH, `misconfigured`, which has no analogue there because codexPreflight() has no
+ * backend to misname. The backend is resolved per review PHASE from config
  * (`outside_voice_loop` / `outside_voice_gate`) instead of being hardcoded to Codex.
  *
  * Why this is a separate export rather than a parameter on codexPreflight():
@@ -167,7 +168,8 @@ echo "CODEX_MODE: $${m}"
 
 Branch on the echoed \`CODEX_MODE\` (the backend named by \`OUTSIDE_VOICE_BACKEND\` is what will actually run):
 - **\`disabled\`** — outside-voice review is off for this phase. ${disabledLine}
-- **\`not_installed\`** — the backend's client is absent (Codex CLI missing, or \`curl\` missing for a hosted backend). Print: "Outside voice not available for the ${opts.phase} phase — using Claude subagent." Fall back to the Claude subagent path.
+- **\`not_installed\`** — the backend's client is absent (Codex CLI missing, or \`python3\` missing for a hosted backend — that is the program which actually issues the request; an earlier version probed \`curl\`, which is a different program and reported ready on a box that could not run the call). Print: "Outside voice not available for the ${opts.phase} phase — using Claude subagent." Fall back to the Claude subagent path.
 - **\`not_authed\`** — the backend is selected but has no credentials. For \`codex\`: run \`codex login\` or set \`$CODEX_API_KEY\`. For \`openrouter\`: set \`$OPENROUTER_API_KEY\`. **Do NOT silently reroute to the other backend** — a phase configured for the cheap tier must never quietly bill the frontier one, and a gate configured for frontier must never quietly downgrade. Print the cause and fall back to the Claude subagent path.
+- **\`misconfigured\`** — \`outside_voice_${opts.phase === 'loop' ? 'loop' : 'gate'}\` holds a value that is not \`codex\`, \`openrouter\` or \`disabled\`. **Do NOT treat this as \`disabled\` and do NOT pick a backend for the user.** "Off on purpose" and "off because of a typo" want opposite responses, and guessing either bills the frontier price for every loop round or quietly weakens the gate. Print: "Outside voice is misconfigured for the ${opts.phase} phase — fix \`outside_voice_${opts.phase === 'loop' ? 'loop' : 'gate'}\` in ~/.gstack/config.yaml." Fall back to the Claude subagent path. (\`exec\` refuses this state outright with exit 2.)
 - **\`ready\`** — run the outside-voice pass below via \`gstack-outside-voice exec --phase ${opts.phase}\`.`;
 }

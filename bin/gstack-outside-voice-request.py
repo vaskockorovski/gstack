@@ -301,11 +301,32 @@ def toks(usage, key):
     is the one direction the analytics must never fail in, so coerce and move on. A value
     that is not a number at all counts as 0 rather than crashing — a wrong-but-present row
     still shows the round happened, which a missing row does not.
+
+    Returns None when the field is ABSENT — which is "we do not know", not "it was free".
+    The distinction is the whole point: this file feeds a cost comparison between a cheap loop
+    and a frontier gate, and a 0 that means "unreported" makes the expensive tier look free and
+    inverts the answer. The same fix was made one layer up for the codex backend; leaving this
+    half at 0 is what "a fix is not done until every dependent site agrees" is about.
     """
+    if not isinstance(usage, dict) or key not in usage:
+        return None
     try:
-        return int(usage.get(key, 0) or 0)
+        return int(usage.get(key) or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def add_toks(a, b):
+    """Sum two possibly-unknown counts.
+
+    None + None stays None — nothing was reported, so nothing is known. None + n yields n,
+    which is a genuine partial and is at least non-zero, so it can never be read as free.
+    """
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a + b
 
 
 def write_usage(prompt_tokens, completion_tokens, served_model):
@@ -352,8 +373,8 @@ if findings_path:
         payload2 = ask(retry)
         text2 = content_of(payload2)
         usage2 = payload2.get("usage") or {}
-        p_tok += toks(usage2, "prompt_tokens")
-        c_tok += toks(usage2, "completion_tokens")
+        p_tok = add_toks(p_tok, toks(usage2, "prompt_tokens"))
+        c_tok = add_toks(c_tok, toks(usage2, "completion_tokens"))
         findings, why2 = parse_findings(text2)
         if findings is None:
             sys.stderr.write(

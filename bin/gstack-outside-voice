@@ -456,7 +456,13 @@ exec_openrouter() {
     fi
     if [ "${_sz:-0}" -gt "$_MAX_DIFF_BYTES" ]; then
       truncated="yes"
-      head -c "$_MAX_DIFF_BYTES" "$diff_file" > "$diff_file.cut" && mv "$diff_file.cut" "$diff_file"
+      # Cut on a LINE boundary, not a byte boundary. `head -c` splits whatever it lands in
+      # the middle of: a multibyte UTF-8 character (the tail is then re-decoded with
+      # errors="replace", so the model silently reviews a corrupted glyph) and, more to the
+      # point, a diff hunk — leaving the reviewer a half-line of code with no context. Dropping
+      # the final partial line costs at most one line of the tail we were already discarding.
+      # `sed $d` rather than `head -n -1`: BSD head has no negative count, and this ships to macOS.
+      head -c "$_MAX_DIFF_BYTES" "$diff_file" | sed '$d' > "$diff_file.cut" && mv "$diff_file.cut" "$diff_file"
     fi
   fi
 
@@ -493,10 +499,21 @@ exec_openrouter() {
     echo "gstack-outside-voice: WARNING — diff exceeded ${_MAX_DIFF_BYTES} bytes and was truncated; this review does NOT cover the omitted tail." >&2
   fi
 
-  local ptok=0 ctok=0 rmodel="$model"
+  # Default to `unknown`, not 0. The zero default was reached on exactly the paths where the
+  # cost is LEAST knowable and most real: a timeout kills python before it can write the usage
+  # file, and the round was still billed upstream. Two timed-out rounds on this branch logged
+  # `in=0 out=0` for requests OpenRouter had already charged for. 0 there does not mean cheap,
+  # it means unmeasured, and this log feeds a cheap-vs-frontier cost comparison.
+  local ptok=unknown ctok=unknown rmodel="$model"
   if [ -s "$resp_file" ]; then
-    ptok=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("prompt_tokens",0))' "$resp_file" 2>/dev/null || echo 0)
-    ctok=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("completion_tokens",0))' "$resp_file" 2>/dev/null || echo 0)
+    # JSON null (usage absent from the API response) prints as None; map it back to the
+    # `unknown` sentinel rather than letting `tr -cd '0-9'` silently flatten it to 0.
+    ptok=$(python3 -c 'import json,sys
+v=json.load(open(sys.argv[1])).get("prompt_tokens")
+print("unknown" if v is None else v)' "$resp_file" 2>/dev/null || echo unknown)
+    ctok=$(python3 -c 'import json,sys
+v=json.load(open(sys.argv[1])).get("completion_tokens")
+print("unknown" if v is None else v)' "$resp_file" 2>/dev/null || echo unknown)
     rmodel=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("model",""))' "$resp_file" 2>/dev/null || echo "$model")
   fi
 
