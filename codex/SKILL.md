@@ -1042,6 +1042,15 @@ elif [ "$_OV_EXIT" = "4" ]; then
   # The reviewer ran but its severity block could not be parsed. This is NOT a clean round.
   echo "ROUND INVALID — findings block unusable. Do NOT count this as satisfying the stop condition; re-run the round."
   head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
+elif [ "$_OV_EXIT" = "5" ]; then
+  # No pre-flight sweep recorded for this lane. Not an error in the reviewer — a missing step.
+  echo "ROUND NOT RUN — no pre-flight sweep recorded. Do the structural sweep and record it, then re-run; the adapter prints the exact command."
+  head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
+elif [ "$_OV_EXIT" = "3" ]; then
+  # Outside-voice review is switched off for this phase. A deliberate off, not a failure —
+  # and emphatically not a clean round: nothing was reviewed.
+  echo "ROUND NOT RUN — outside-voice review is disabled for this phase. This is NOT a clean round; nothing was reviewed."
+  head -5 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
 elif [ "$_OV_EXIT" != "0" ]; then
   echo "[outside-voice exit $_OV_EXIT] $(head -1 "$TMPERR" 2>/dev/null || echo "no stderr captured")"
   head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true

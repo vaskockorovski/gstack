@@ -17,6 +17,17 @@
 #   --base <ref>            base ref for the inlined diff (default: origin/main)
 #   --timeout <seconds>     wall-clock cap (default: 330)
 #   --label <name>          tag for the usage log (default: phase name)
+#   --findings-out <file>   require a VALIDATED findings block and write it here as JSON
+#                           {p1,p2,p3,findings[],counts_disagreed}. Severity counts must come
+#                           from this file, never from parsing the prose. Not available on the
+#                           codex backend (it owns its output format) — there the file's
+#                           ABSENCE after a successful run is the signal to read codex directly.
+#
+# Exit codes:
+#   0  ok          2  usage / refused input (bad ref, empty diff, empty prompt)
+#   3  disabled    4  findings block unusable after one retry — NOT a clean round
+#   5  no pre-flight sweep recorded for this lane (first loop round only)
+#   124 timeout (from the timeout wrapper)
 #
 # Backends:
 #   codex       — `codex exec`, WITH repo access (reads files, runs git itself)
@@ -335,6 +346,10 @@ exec_openrouter() {
 
   local model
   model="$(_cfg outside_voice_loop_model)"
+  # MIRROR of gstack-config's lookup_default for this key — reached only if gstack-config is
+  # missing or broken, since _cfg already falls back to that table. It is a third copy of one
+  # fact (config header prose, lookup_default, here), so changing the default means changing
+  # all three; grep the model id before assuming one edit is enough.
   [ -n "$model" ] || model="minimax/minimax-m3"
 
   # Tool-less backend: inline the diff, or it reviews nothing at all.

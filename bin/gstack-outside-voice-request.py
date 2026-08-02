@@ -10,7 +10,8 @@ Reads its inputs from the environment (set by the calling shell function):
   OR_MODEL, OR_PROMPT_FILE, OR_DIFF_FILE, OR_TRUNCATED, OR_RESP, OR_TIMEOUT,
   OR_FINDINGS (optional), OPENROUTER_API_KEY, GSTACK_OUTSIDE_VOICE_BASE_URL (optional)
 
-Exit codes:
+Exit codes THIS FILE produces (the calling shell adds its own — 2 refused input, 3 disabled,
+5 no pre-flight sweep, 124 timeout — so this list is not the adapter's full set):
   0  ok
   1  transport / API / empty-response failure
   4  the findings block could not be parsed after one retry — DISTINCT from 1 so a caller can
