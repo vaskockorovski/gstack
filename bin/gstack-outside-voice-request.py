@@ -160,13 +160,32 @@ def parse_findings(text):
         if sev not in tally:
             return None, "a findings entry has severity %r (want P1, P2 or P3)" % (sev,)
         tally[sev] += 1
-    # Counts and array must agree. If they disagree the model is guessing at one of them and we
-    # cannot tell which — so refuse rather than silently pick the convenient number. The
-    # dangerous shape is zeros alongside a populated array: that reads as a clean round.
-    if (obj["p1"], obj["p2"], obj["p3"]) != (tally["P1"], tally["P2"], tally["P3"]):
-        return None, ("counts (p1=%d p2=%d p3=%d) disagree with the findings array "
-                      "(P1=%d P2=%d P3=%d)"
-                      % (obj["p1"], obj["p2"], obj["p3"], tally["P1"], tally["P2"], tally["P3"]))
+    # Counts vs array: the ARRAY is authoritative, the scalars are a checksum.
+    #
+    # Refusing outright on any disagreement was the first design, and it is wrong in the one
+    # direction that matters. The array is an enumeration — every finding is explicitly there —
+    # while the scalars are the model's own arithmetic, and models miscount. Observed live:
+    # p3=6 claimed beside 7 listed P3s, twice including on the retry, while P1 and P2 (the only
+    # fields the stop condition reads) agreed exactly. Refusing there throws away a good round
+    # over a slip in a field that gates nothing, and a model that reliably fumbles the sum would
+    # stall the loop indefinitely at full round cost.
+    #
+    # So take the MAXIMUM of the two per severity. That can never under-report, which is the
+    # property this whole contract exists to guarantee: the dangerous shape is p1=0 beside a
+    # populated array, and max() reports the finding rather than the zero. The disagreement is
+    # still surfaced loudly — a reviewer that cannot count its own findings is worth knowing
+    # about — it just is not grounds for discarding the findings.
+    mismatch = (obj["p1"], obj["p2"], obj["p3"]) != (tally["P1"], tally["P2"], tally["P3"])
+    if mismatch:
+        sys.stderr.write(
+            "WARNING: findings counts (p1=%d p2=%d p3=%d) disagree with the array "
+            "(P1=%d P2=%d P3=%d). Taking the larger of each — a count is never allowed to "
+            "under-report.\n"
+            % (obj["p1"], obj["p2"], obj["p3"], tally["P1"], tally["P2"], tally["P3"]))
+    obj["p1"] = max(obj["p1"], tally["P1"])
+    obj["p2"] = max(obj["p2"], tally["P2"])
+    obj["p3"] = max(obj["p3"], tally["P3"])
+    obj["counts_disagreed"] = mismatch
     return obj, None
 
 
