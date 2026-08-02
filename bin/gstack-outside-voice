@@ -145,7 +145,7 @@ with_timeout() {
 
 cmd_exec() {
   local phase="" prompt_file="" repo_root="" effort="high" repo_context="diff"
-  local base="origin/main" timeout_s="330" label=""
+  local base="origin/main" timeout_s="330" label="" findings_out=""
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -157,6 +157,7 @@ cmd_exec() {
       --base)         base="${2:?}"; shift 2 ;;
       --timeout)      timeout_s="${2:?}"; shift 2 ;;
       --label)        label="${2:?}"; shift 2 ;;
+      --findings-out) findings_out="${2:?}"; shift 2 ;;
       *) die "unknown option '$1'" ;;
     esac
   done
@@ -187,8 +188,10 @@ cmd_exec() {
 
   case "$backend" in
     disabled) echo "OUTSIDE_VOICE_DISABLED phase=$phase" >&2; return 3 ;;
-    codex)      exec_codex      "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" ;;
-    openrouter) exec_openrouter "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$repo_context" "$base" ;;
+    codex)
+      [ -z "$findings_out" ] || die "--findings-out is not supported on the codex backend (codex owns its own output format); read its findings directly."
+      exec_codex "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" ;;
+    openrouter) exec_openrouter "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$repo_context" "$base" "$findings_out" ;;
   esac
 }
 
@@ -213,7 +216,7 @@ exec_codex() {
 
 exec_openrouter() {
   local phase="$1" prompt_file="$2" repo_root="$3" effort="$4" timeout_s="$5"
-  local label="$6" repo_context="$7" base="$8"
+  local label="$6" repo_context="$7" base="$8" findings_out="${9:-}"
 
   local _ork
   _ork=$(printf '%s' "${OPENROUTER_API_KEY:-}" | tr -d '[:space:]')
@@ -285,90 +288,9 @@ exec_openrouter() {
   local rc=0
   OR_MODEL="$model" OR_PROMPT_FILE="$prompt_file" OR_DIFF_FILE="$diff_file" \
   OR_TRUNCATED="$truncated" OR_EFFORT="$effort" OR_RESP="$resp_file" \
-  OR_TIMEOUT="$timeout_s" \
+  OR_TIMEOUT="$timeout_s" OR_FINDINGS="$findings_out" \
   GSTACK_OUTSIDE_VOICE_BASE_URL="${GSTACK_OUTSIDE_VOICE_BASE_URL:-}" \
-  with_timeout "$timeout_s" python3 -c '
-import json, os, sys, urllib.request, urllib.error
-
-model = os.environ["OR_MODEL"]
-prompt = open(os.environ["OR_PROMPT_FILE"], encoding="utf-8", errors="replace").read()
-diff_path = os.environ.get("OR_DIFF_FILE") or ""
-truncated = os.environ.get("OR_TRUNCATED") == "yes"
-
-if diff_path:
-    diff = open(diff_path, encoding="utf-8", errors="replace").read()
-    note = ""
-    if truncated:
-        # Never a silent cap: the model is told, and so is the reader (stderr below).
-        note = ("\n\n!! NOTE: the diff below was TRUNCATED to fit. Findings cannot be "
-                "assumed complete for the omitted tail.\n")
-    prompt = (prompt + note + "\n\nYou have NO filesystem or tool access. Review only "
-              "the diff between the delimiters.\n\nDIFF_START\n" + diff + "\nDIFF_END\n")
-
-body = json.dumps({
-    "model": model,
-    "messages": [{"role": "user", "content": prompt}],
-}).encode("utf-8")
-
-base_url = os.environ.get("GSTACK_OUTSIDE_VOICE_BASE_URL") or "https://openrouter.ai/api/v1"
-# The Authorization header rides on this request. A plain-http override would put the API key
-# on the wire in clear text, and the override exists mainly so tests can point at a local
-# stub — so allow http ONLY for loopback, and refuse it anywhere else rather than warn.
-# A warning here would be printed to a stderr no one reads until after the key has leaked.
-_scheme_host = base_url.split("://", 1)
-if len(_scheme_host) == 2 and _scheme_host[0] == "http":
-    _host = _scheme_host[1].split("/", 1)[0].split(":", 1)[0]
-    if _host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
-        sys.stderr.write(
-            "refusing to send the API key over plain http to %r — use https, or point at "
-            "loopback for testing\n" % _host)
-        sys.exit(1)
-req = urllib.request.Request(
-    base_url.rstrip("/") + "/chat/completions",
-    data=body,
-    headers={
-        "Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"],
-        "Content-Type": "application/json",
-        "X-Title": "gstack-outside-voice",
-    },
-)
-try:
-    # A per-socket timeout, not just the shell wrapper. Without it a server that completes the
-    # handshake and then stalls holds the read open until the outer `timeout` kills the whole
-    # process group — by which point the request is already billed and nothing is returned.
-    # Kept below the shell budget so python reports the failure rather than dying mid-read.
-    _sock_timeout = max(30, int(os.environ.get("OR_TIMEOUT", "330")) - 30)
-    with urllib.request.urlopen(req, timeout=_sock_timeout) as r:
-        payload = json.load(r)
-except urllib.error.HTTPError as e:
-    # Print the API error WITHOUT echoing the request (which carries no secret,
-    # but may carry source). Never print the Authorization header.
-    sys.stderr.write("openrouter HTTP %s: %s\n" % (e.code, e.read().decode("utf-8", "replace")[:2000]))
-    sys.exit(1)
-except Exception as e:
-    sys.stderr.write("openrouter request failed: %s\n" % e)
-    sys.exit(1)
-
-if "error" in payload and payload.get("error"):
-    sys.stderr.write("openrouter error: %s\n" % json.dumps(payload["error"])[:2000])
-    sys.exit(1)
-
-choices = payload.get("choices") or []
-text = (choices[0].get("message", {}).get("content") if choices else "") or ""
-if not text.strip():
-    sys.stderr.write("openrouter returned an empty response\n")
-    sys.exit(1)
-
-sys.stdout.write(text)
-if not text.endswith("\n"):
-    sys.stdout.write("\n")
-
-usage = payload.get("usage") or {}
-json.dump({"prompt_tokens": usage.get("prompt_tokens", 0),
-           "completion_tokens": usage.get("completion_tokens", 0),
-           "model": payload.get("model", model)},
-          open(os.environ["OR_RESP"], "w"))
-' || rc=$?
+  with_timeout "$timeout_s" python3 "$_SELF_DIR/gstack-outside-voice-request.py" || rc=$?
 
   if [ "$truncated" = "yes" ]; then
     echo "gstack-outside-voice: WARNING — diff exceeded ${_MAX_DIFF_BYTES} bytes and was truncated; this review does NOT cover the omitted tail." >&2

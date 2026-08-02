@@ -216,18 +216,32 @@ break in production: edge cases, race conditions, security holes, resource leaks
 silent failure paths, and data-corruption paths. Be adversarial and specific.
 Label each finding P1 / P2 / P3 and reference file:line. No compliments.
 PROMPT
+_OV_FINDINGS=$(mktemp "$TMP_ROOT/gstack-ov-findings-XXXXXX.json")
 ~/.claude/skills/gstack/bin/gstack-outside-voice exec \
   --phase loop --prompt-file "$_LOOP_PROMPT" --repo-root "$_REPO_ROOT" \
-  --base "origin/<base>" --effort high --timeout 330 < /dev/null 2>"$TMPERR"
+  --base "origin/<base>" --effort high --timeout 330 \
+  --findings-out "$_OV_FINDINGS" < /dev/null 2>"$TMPERR"
 _OV_EXIT=$?
 rm -f "$_LOOP_PROMPT"
 if [ "$_OV_EXIT" = "124" ]; then
   _gstack_codex_log_event "codex_timeout" "330"
+elif [ "$_OV_EXIT" = "4" ]; then
+  # The reviewer ran but its severity block could not be parsed. This is NOT a clean round.
+  echo "ROUND INVALID — findings block unusable. Do NOT count this as satisfying the stop condition; re-run the round."
+  head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
 elif [ "$_OV_EXIT" != "0" ]; then
   echo "[outside-voice exit $_OV_EXIT] $(head -1 "$TMPERR" 2>/dev/null || echo "no stderr captured")"
   head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
 fi
 ```
+
+**Take the severity counts from `$_OV_FINDINGS`, never by reading the prose.** The file is
+validated JSON — `{"p1":N,"p2":N,"p3":N,"findings":[…]}` — and the adapter refuses to write it
+unless the counts agree with the findings array. Counting `P1`/`P2` headings out of the prose is
+what this replaced: the heading style varies between rounds (`### P1-1` one round, `### P1.1`
+the next), and a pattern that matches nothing yields zero, which reads as a clean round and ends
+the loop with real P1s outstanding. **Exit 4 means the round did not establish anything** — treat
+it as a failed round and re-run, never as a pass.
 
 Two things about this path that are easy to get wrong:
 
