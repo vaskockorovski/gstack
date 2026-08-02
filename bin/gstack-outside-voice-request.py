@@ -172,9 +172,15 @@ else:
 # has no counterpart, so it maps to high rather than being sent through to be rejected.
 _EFFORT = (os.environ.get("OR_EFFORT") or "high").strip().lower()
 REASONING_EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high"}.get(_EFFORT, "high")
+if _EFFORT and REASONING_EFFORT != _EFFORT:
+    # Say so. A caller that asked for xhigh and silently received high is being told its request
+    # was honoured, which is the same class of lie as the flag that was validated and discarded:
+    # the difference between "we cannot do that" and "we did that" is the whole message.
+    sys.stderr.write("note: reasoning effort %r has no OpenRouter equivalent; sending %r "
+                     "instead.\n" % (_EFFORT, REASONING_EFFORT))
 
 
-def ask(message):
+def ask(message, on_fail=None):
     body = json.dumps({"model": model,
                        "messages": [{"role": "user", "content": message}],
                        "reasoning": {"effort": REASONING_EFFORT}}).encode("utf-8")
@@ -213,9 +219,13 @@ def ask(message):
                 "non-login shell inherits its environment from the parent process, so an edited "
                 "profile does not take effect until the shell is a login shell or the process "
                 "restarts.\n")
+        if on_fail is not None:
+            on_fail()
         sys.exit(1)
     except Exception as e:
         sys.stderr.write("openrouter request failed: %s\n" % e)
+        if on_fail is not None:
+            on_fail()
         sys.exit(1)
 
 
@@ -423,7 +433,12 @@ if findings_path:
                  # fraction of the first call, and the ceiling is only here to stop a runaway
                  # response from blowing the context window.
                  % (why, FENCE, text[:200000]))
-        payload2 = ask(retry)
+        # The FIRST call already succeeded and was already billed, and its counts are sitting
+        # in p_tok/c_tok. Exiting here without writing them discards a cost that was genuinely
+        # incurred — the same defect fixed for content_of two rounds ago, still open on the
+        # sibling path, which is what "a fix is not done until every dependent site agrees"
+        # means in practice.
+        payload2 = ask(retry, lambda: write_usage(p_tok, c_tok, served))
         usage2 = payload2.get("usage") or {}
         p_tok = add_toks(p_tok, toks(usage2, "prompt_tokens"))
         c_tok = add_toks(c_tok, toks(usage2, "completion_tokens"))
