@@ -114,6 +114,27 @@ describe('the usage log never reports an unknown cost as zero', () => {
     return rows;
   }
 
+  // Pins the CALL SITES, not just the function. Round 10 changed the codex rows to log
+  // `unknown` via a replace whose old text ended in a space and whose new text did not, fusing
+  // the token argument to the status: `log_usage … unknown unknowntimeout`. $6 became
+  // "unknowntimeout" (coerced to 0 — the exact bug being fixed) and $7 went empty. The
+  // unit test above passed throughout, because it hand-writes correct arguments: a test that
+  // constructs its own inputs can say nothing about whether the real callers pass valid ones.
+  test('every exec_codex call site passes 7 args and yields null tokens with a real status', () => {
+    const adapter = fs.readFileSync(ADAPTER, 'utf-8');
+    const sites = [...adapter.matchAll(/log_usage codex .*$/gm)].map((m) => m[0]);
+    expect(sites.length).toBeGreaterThan(0);
+    for (const site of sites) {
+      const rows = emit(
+        site.replace(/^log_usage /, '').replace(/\$phase/g, 'final_gate').replace(/\$label/g, 'gate').replace(/\$rc/g, '7'),
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].prompt_tokens).toBeNull();
+      expect(rows[0].completion_tokens).toBeNull();
+      expect(rows[0].status).toBeTruthy();
+    }
+  });
+
   test('an unknown count is null, not 0', () => {
     const [row] = emit("codex '' final_gate gate unknown unknown ok");
     expect(row).toBeDefined();

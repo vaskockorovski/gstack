@@ -35,7 +35,8 @@
 #
 # Exit codes:
 #   0  ok          2  usage / refused input (bad ref, empty diff, empty prompt,
-#                     unrecognised outside_voice_* backend value)
+#                     unrecognised outside_voice_* backend value, unreadable config,
+#                     diff truncated to nothing)
 #   3  disabled    4  findings block unusable after one retry — NOT a clean round
 #   5  no pre-flight sweep recorded for this lane (first loop round only)
 #   124 timeout (from the timeout wrapper)
@@ -73,6 +74,13 @@ die() { echo "gstack-outside-voice: $*" >&2; exit 2; }
 
 resolve_backend() {
   local phase="$1" backend=""
+  # A missing or non-executable gstack-config makes _cfg return "" for EVERY key, and "" is the
+  # documented "unconfigured install" case, which resolves to codex. So a TOOLING failure lands
+  # on the frontier backend for every loop round — the same expensive-by-default outcome the
+  # typo guard below exists to prevent, arriving through a door that guard cannot see, and with
+  # no warning at all, because "" is a legitimate value rather than an error. An unreadable
+  # config is not the same fact as an unconfigured one; only the second is safe to default.
+  [ -x "$_CONFIG" ] || die "cannot read configuration: $_CONFIG is missing or not executable. Refusing to assume a backend — guessing here bills the frontier price for every loop round."
   case "$phase" in
     loop)       backend="$(_cfg outside_voice_loop)" ;;
     final_gate) backend="$(_cfg outside_voice_gate)" ;;
@@ -376,9 +384,9 @@ exec_codex() {
     # travels in the prompt text (same shape the skill has always used).
     ( cd "$repo_root" && with_timeout "$timeout_s" codex review - \
         -c "model_reasoning_effort=\"$effort\"" < "$prompt_file" ) || rc=$?
-    if [ "$rc" -eq 124 ]; then log_usage codex "" "$phase" "$label" unknown unknowntimeout
-    elif [ "$rc" -ne 0 ]; then log_usage codex "" "$phase" "$label" unknown unknown"error_$rc"
-    else log_usage codex "" "$phase" "$label" unknown unknownok
+    if [ "$rc" -eq 124 ]; then log_usage codex "" "$phase" "$label" unknown unknown timeout
+    elif [ "$rc" -ne 0 ]; then log_usage codex "" "$phase" "$label" unknown unknown "error_$rc"
+    else log_usage codex "" "$phase" "$label" unknown unknown ok
     fi
     return "$rc"
   fi
@@ -398,11 +406,11 @@ exec_codex() {
     -C "$repo_root" -s read-only \
     -c "model_reasoning_effort=\"$effort\"" < "$prompt_file" || rc=$?
   if [ "$rc" -eq 124 ]; then
-    log_usage codex "" "$phase" "$label" unknown unknowntimeout
+    log_usage codex "" "$phase" "$label" unknown unknown timeout
   elif [ "$rc" -ne 0 ]; then
-    log_usage codex "" "$phase" "$label" unknown unknown"error_$rc"
+    log_usage codex "" "$phase" "$label" unknown unknown "error_$rc"
   else
-    log_usage codex "" "$phase" "$label" unknown unknownok
+    log_usage codex "" "$phase" "$label" unknown unknown ok
   fi
   return "$rc"
 }
@@ -463,6 +471,17 @@ exec_openrouter() {
       # the final partial line costs at most one line of the tail we were already discarding.
       # `sed $d` rather than `head -n -1`: BSD head has no negative count, and this ships to macOS.
       head -c "$_MAX_DIFF_BYTES" "$diff_file" | sed '$d' > "$diff_file.cut" && mv "$diff_file.cut" "$diff_file"
+      # RE-CHECK emptiness. The empty-diff guard above runs BEFORE truncation, so it cannot
+      # see this: cutting on a line boundary can empty a non-empty file outright when the
+      # first line alone exceeds the cap (a minified bundle, a single huge blob). The result
+      # would be a request carrying no diff at all, which returns "no findings" and reads as
+      # a clean round — the precise equivalence between "nothing wrong" and "nothing looked
+      # at" that both guards exist to break. Introduced by the line-boundary fix itself.
+      local _tsz
+      _tsz=$(wc -c < "$diff_file" | tr -d '"'"'[:space:]'"'"')
+      if [ "${_tsz:-0}" -eq 0 ]; then
+        die "the diff's first line alone exceeds ${_MAX_DIFF_BYTES} bytes, so truncating to a line boundary left nothing to review. Raise GSTACK_OUTSIDE_VOICE_MAX_DIFF_BYTES. Not reporting this as a clean round."
+      fi
     fi
   fi
 

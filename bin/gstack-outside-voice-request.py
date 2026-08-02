@@ -265,11 +265,13 @@ def parse_findings(text):
     # over a slip in a field that gates nothing, and a model that reliably fumbles the sum would
     # stall the loop indefinitely at full round cost.
     #
-    # So take the MAXIMUM of the two per severity. That can never under-report, which is the
-    # property this whole contract exists to guarantee: the dangerous shape is p1=0 beside a
-    # populated array, and max() reports the finding rather than the zero. The disagreement is
-    # still surfaced loudly — a reviewer that cannot count its own findings is worth knowing
-    # about — it just is not grounds for discarding the findings.
+    # A max() of the two was tried here and REJECTED — recorded because the argument for it is
+    # seductive and will be re-proposed. It never under-reports, which sounds like exactly the
+    # right property, but it also never comes down: a model that over-reports a scalar (p1=1
+    # beside an empty array) pins the count at 1 forever and the loop can never reach "no P1,
+    # no P2" however clean the artefact gets. See the note at the assignment below. The
+    # disagreement is still surfaced loudly — a reviewer that cannot count its own findings is
+    # worth knowing about — it just is not grounds for discarding the findings.
     mismatch = (obj["p1"], obj["p2"], obj["p3"]) != (tally["P1"], tally["P2"], tally["P3"])
     if mismatch:
         sys.stderr.write(
@@ -308,7 +310,10 @@ def toks(usage, key):
     inverts the answer. The same fix was made one layer up for the codex backend; leaving this
     half at 0 is what "a fix is not done until every dependent site agrees" is about.
     """
-    if not isinstance(usage, dict) or key not in usage:
+    # `key in usage` is not enough: an API that sends {"prompt_tokens": null} is telling us
+    # it does not know, and int(None or 0) would quietly turn that into 0 — reintroducing the
+    # free-looking row this function was written to prevent, through the one door it left open.
+    if not isinstance(usage, dict) or usage.get(key) is None:
         return None
     try:
         return int(usage.get(key) or 0)
