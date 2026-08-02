@@ -91,8 +91,11 @@ probe() {
     echo "not_authed"; return 0
   fi
 
-  # openrouter
-  command -v curl >/dev/null 2>&1 || { echo "not_installed"; return 0; }
+  # openrouter — probe python3, which is what actually issues the request. This checked `curl`
+  # for a while, which is a different program: a box with curl and no python3 reported "ready"
+  # and then failed at call time, and a box with python3 and no curl reported "not_installed"
+  # while being perfectly capable. Probe the thing you are about to run.
+  command -v python3 >/dev/null 2>&1 || { echo "not_installed"; return 0; }
   local _ork
   _ork=$(printf '%s' "${OPENROUTER_API_KEY:-}" | tr -d '[:space:]')
   # Fail LOUD, not silent: an absent key on a phase explicitly configured for
@@ -165,6 +168,10 @@ cmd_exec() {
   [ -n "$phase" ] || die "--phase is required"
   [ -n "$prompt_file" ] || die "--prompt-file is required"
   [ -f "$prompt_file" ] || die "prompt file not found: $prompt_file"
+  # -f passes for an EMPTY file, which would bill a request carrying only the diff and no
+  # instructions — and a reviewer given no task plausibly returns no findings, which reads as a
+  # clean round. Same family as the empty-diff guard: nothing asked is not nothing wrong.
+  [ -s "$prompt_file" ] || die "prompt file is empty: $prompt_file. Refusing to send a review request with no instructions."
   case "$effort" in low|medium|high) ;; *) die "--effort must be low|medium|high" ;; esac
   case "$repo_context" in diff|none) ;; *) die "--repo-context must be diff|none" ;; esac
   [ -n "$label" ] || label="$phase"
