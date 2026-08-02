@@ -35,7 +35,11 @@ import urllib.request
 # prompt-injection channel straight into the stop condition.
 #
 # The nonce is generated per request, so nothing already in the diff can predict it.
-NONCE = secrets.token_hex(8)
+# 8 hex chars, not 16: the model has to reproduce this marker verbatim, and the first live
+# attempt at 16 failed to copy it at all. 4 bytes of entropy is ample here — the threat is a
+# fenced block already sitting in the diff, and the diff is fixed before the nonce is drawn,
+# so it cannot contain a value it had no way to predict.
+NONCE = secrets.token_hex(4)
 FENCE = "findings-json-" + NONCE
 
 model = os.environ["OR_MODEL"]
@@ -75,7 +79,9 @@ FINDINGS_CONTRACT_TMPL = """
 ---
 MANDATORY OUTPUT CONTRACT — your response is parsed by a program.
 
-After your prose review, emit EXACTLY ONE fenced block, last in your response:
+After your prose review, emit EXACTLY ONE fenced block, last in your response.
+The fence marker below is unique to this request — copy it CHARACTER FOR CHARACTER,
+including the trailing hex. A block with any other fence is ignored entirely.
 
 ```%FENCE%
 {"p1": <int>, "p2": <int>, "p3": <int>,
@@ -243,12 +249,17 @@ if findings_path:
         # ONE re-prompt, for the block only — not a second full review. Cheap, and it covers
         # the ordinary case: a model that did the review and forgot the envelope.
         sys.stderr.write("findings block unusable (%s) — re-prompting once for the block\n" % why)
+        # One % expression over the whole string. An earlier version spliced the fence in with
+        # `+ FENCE +`, which breaks the implicit concatenation into two expressions so the %
+        # bound only to the trailing fragment — a TypeError that crashed the RETRY path, i.e.
+        # the recovery code was reachable only in the situation where it did not work.
         retry = ("Your previous reply did not carry a usable findings block (%s).\n\n"
-                 "Reply with NOTHING but the fenced block, restating the findings you already "
-                 "made:\n\n```" + FENCE + "\n"
+                 "Reply with NOTHING but the fenced block below. The fence marker must be "
+                 "copied EXACTLY, including the trailing hex:\n\n```%s\n"
                  "{\"p1\": <int>, \"p2\": <int>, \"p3\": <int>, \"findings\": "
                  "[{\"severity\": \"P1\", \"title\": \"<short>\", \"location\": \"<file:line>\"}]}"
-                 "\n```\n\nYour previous reply was:\n\n%s" % (why, text[:12000]))
+                 "\n```\n\nYour previous reply was:\n\n%s"
+                 % (why, FENCE, text[:12000]))
         payload2 = ask(retry)
         text2 = content_of(payload2)
         usage2 = payload2.get("usage") or {}
