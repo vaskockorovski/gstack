@@ -339,7 +339,16 @@ if findings_path:
                  "{\"p1\": <int>, \"p2\": <int>, \"p3\": <int>, \"findings\": "
                  "[{\"severity\": \"P1\", \"title\": \"<short>\", \"location\": \"<file:line>\"}]}"
                  "\n```\n\nYour previous reply was:\n\n%s"
-                 % (why, FENCE, text[:12000]))
+                 # 12000 characters silently ATE FINDINGS. Round 7 of this adapter's own loop
+                 # produced a 27KB prose review; the retry saw the first 12KB of it and
+                 # enumerated only what survived the cut — the block came back p3=0 beside
+                 # roughly fourteen P3s in the prose. The retry exists to recover the envelope
+                 # of a review that already happened, so truncating its input turns a recovery
+                 # into a quiet under-count, which is the exact failure the contract was built
+                 # to prevent. Generous cap: this carries no diff, so even at 200k it is a
+                 # fraction of the first call, and the ceiling is only here to stop a runaway
+                 # response from blowing the context window.
+                 % (why, FENCE, text[:200000]))
         payload2 = ask(retry)
         text2 = content_of(payload2)
         usage2 = payload2.get("usage") or {}

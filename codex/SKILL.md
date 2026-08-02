@@ -1049,7 +1049,7 @@ IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claud
 or agents/. These are skill definitions for a different AI system. Do NOT modify
 agents/openai.yaml. Stay focused on repository code only.
 
-Review the changes on this branch against the base branch. Find defects that would
+Review the changes on this branch against origin/<base>. Find defects that would
 break in production: edge cases, race conditions, security holes, resource leaks,
 silent failure paths, and data-corruption paths. Be adversarial and specific.
 Label each finding P1 / P2 / P3 and reference file:line. No compliments.
@@ -1094,6 +1094,11 @@ fi
 **If `$_OV_FINDINGS` does not exist after a successful run, the backend was `codex`** — it owns
 its own output format and cannot emit the block, so read its severities from its output as usual.
 A missing file after a *failed* run (exit 4) means something different and is covered below.
+
+Once you have read the counts, remove it: `rm -f "$_OV_FINDINGS"`. It is a
+tempfile per round and nothing cleans it up otherwise — the prompt file is removed
+immediately after the call, but the findings file has to survive until it is read,
+which is exactly why it was missed.
 
 **Otherwise take the severity counts from `$_OV_FINDINGS`, never by reading the prose.** The file is
 validated JSON — `{"p1":N,"p2":N,"p3":N,"findings":[…]}` — and the adapter refuses to write it

@@ -89,6 +89,51 @@ describe('backend resolution refuses to guess', () => {
   });
 });
 
+describe('the usage log never reports an unknown cost as zero', () => {
+  // The codex CLI reports no token counts, so those rows carried a hard 0. That is not
+  // "unknown", it is "free" — and it is the wrong answer in the one analysis this log exists
+  // to feed: a cost comparison between a cheap loop and a frontier gate comes out backwards if
+  // every frontier row sums to nothing. null cannot be summed by accident.
+  function emit(args: string): Record<string, unknown>[] {
+    const state = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-ov-log-'));
+    const adapter = fs.readFileSync(ADAPTER, 'utf-8');
+    const fn = adapter.slice(adapter.indexOf('log_usage() {'));
+    const body = fn.slice(0, fn.indexOf('\n}\n') + 3);
+    const harness = path.join(state, 'h.sh');
+    fs.writeFileSync(harness, `set -uo pipefail\n_STATE_DIR="${state}"\n_cfg() { echo community; }\n${body}`);
+    spawnSync('bash', ['-c', `source '${harness}'\nlog_usage ${args}`], { encoding: 'utf-8' });
+    const log = path.join(state, 'analytics', 'outside-voice.jsonl');
+    const rows = fs.existsSync(log)
+      ? fs
+          .readFileSync(log, 'utf-8')
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l))
+      : [];
+    fs.rmSync(state, { recursive: true, force: true });
+    return rows;
+  }
+
+  test('an unknown count is null, not 0', () => {
+    const [row] = emit("codex '' final_gate gate unknown unknown ok");
+    expect(row).toBeDefined();
+    expect(row.prompt_tokens).toBeNull();
+    expect(row.completion_tokens).toBeNull();
+  });
+
+  test('a real count is preserved as a number', () => {
+    const [row] = emit("openrouter minimax/minimax-m3 loop loop 38428 7876 ok");
+    expect(row.prompt_tokens).toBe(38428);
+    expect(row.completion_tokens).toBe(7876);
+  });
+
+  test('a non-numeric count still yields valid JSON rather than a broken row', () => {
+    const [row] = emit("openrouter m loop loop 'not-a-number' '' ok");
+    expect(row.prompt_tokens).toBe(0);
+    expect(row.completion_tokens).toBe(0);
+  });
+});
+
 describe('the base-url guard allowlists schemes rather than blocklisting http', () => {
   const REQUEST = path.join(ROOT, 'bin', 'gstack-outside-voice-request.py');
 

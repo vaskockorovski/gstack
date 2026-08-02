@@ -160,9 +160,20 @@ log_usage() {
   _st=$(printf '%s' "$7" | tr -cd 'A-Za-z0-9._-')
   # Token counts come from the API but are interpolated unquoted, so a non-numeric value
   # would produce invalid JSON rather than a wrong number.
+  #
+  # The literal `unknown` becomes JSON null, and the codex backend passes it on every call.
+  # Codex reports no token counts to us, so those rows previously carried a hard 0 — which is
+  # not "we don't know", it is "this cost nothing", and it is the WRONG answer in the one
+  # analysis this file exists to feed. VAS-1964 compares cost per round between a cheap loop
+  # and a frontier gate; zeros on every frontier row make the expensive tier look free and the
+  # comparison come out backwards. null cannot be summed by accident: an analyst gets an error
+  # or a visible gap instead of a confident wrong number. Under-reporting spend silently is the
+  # one direction this log must never fail in.
   local _pt _ct
-  _pt=$(printf '%s' "${5:-0}" | tr -cd '0-9'); [ -n "$_pt" ] || _pt=0
-  _ct=$(printf '%s' "${6:-0}" | tr -cd '0-9'); [ -n "$_ct" ] || _ct=0
+  if [ "${5:-}" = "unknown" ]; then _pt=null
+  else _pt=$(printf '%s' "${5:-0}" | tr -cd '0-9'); [ -n "$_pt" ] || _pt=0; fi
+  if [ "${6:-}" = "unknown" ]; then _ct=null
+  else _ct=$(printf '%s' "${6:-0}" | tr -cd '0-9'); [ -n "$_ct" ] || _ct=0; fi
   printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"status":"%s","ts":"%s"}\n' \
     "$_b" "$_m" "$_p" "$_l" "$_pt" "$_ct" "$_st" "$_ts" \
     >> "$_STATE_DIR/analytics/outside-voice.jsonl" 2>/dev/null || true
@@ -365,9 +376,9 @@ exec_codex() {
     # travels in the prompt text (same shape the skill has always used).
     ( cd "$repo_root" && with_timeout "$timeout_s" codex review - \
         -c "model_reasoning_effort=\"$effort\"" < "$prompt_file" ) || rc=$?
-    if [ "$rc" -eq 124 ]; then log_usage codex "" "$phase" "$label" 0 0 timeout
-    elif [ "$rc" -ne 0 ]; then log_usage codex "" "$phase" "$label" 0 0 "error_$rc"
-    else log_usage codex "" "$phase" "$label" 0 0 ok
+    if [ "$rc" -eq 124 ]; then log_usage codex "" "$phase" "$label" unknown unknowntimeout
+    elif [ "$rc" -ne 0 ]; then log_usage codex "" "$phase" "$label" unknown unknown"error_$rc"
+    else log_usage codex "" "$phase" "$label" unknown unknownok
     fi
     return "$rc"
   fi
@@ -387,11 +398,11 @@ exec_codex() {
     -C "$repo_root" -s read-only \
     -c "model_reasoning_effort=\"$effort\"" < "$prompt_file" || rc=$?
   if [ "$rc" -eq 124 ]; then
-    log_usage codex "" "$phase" "$label" 0 0 timeout
+    log_usage codex "" "$phase" "$label" unknown unknowntimeout
   elif [ "$rc" -ne 0 ]; then
-    log_usage codex "" "$phase" "$label" 0 0 "error_$rc"
+    log_usage codex "" "$phase" "$label" unknown unknown"error_$rc"
   else
-    log_usage codex "" "$phase" "$label" 0 0 ok
+    log_usage codex "" "$phase" "$label" unknown unknownok
   fi
   return "$rc"
 }
