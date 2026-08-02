@@ -67,8 +67,37 @@ if diff_path:
         # Never a silent cap: the model is told, and so is the reader (stderr, caller side).
         note = ("\n\n!! NOTE: the diff below was TRUNCATED to fit. Findings cannot be "
                 "assumed complete for the omitted tail.\n")
+    # HOW TO READ A UNIFIED DIFF, stated explicitly.
+    #
+    # Measured, not guessed: across three consecutive live rounds on this adapter's own branch,
+    # a tool-less reviewer produced 12 of 13, 6 of 9, and 6 of 12 false positives, and the bulk
+    # of them were two mistakes about the FORM of the input rather than the content:
+    #
+    #   1. `-` lines read as live code. Two rounds re-reported defects the previous round had
+    #      FIXED, because the removal is still visible in the diff. One quoted a comment that
+    #      says "an earlier version fell back to `git diff HEAD`" as proof the fallback exists.
+    #   2. absence read as non-existence. `$TMP_ROOT` was reported unset — it is assigned 130
+    #      lines above the hunk, outside the diff. A tool-less backend cannot look, so it must
+    #      be told that not-in-the-diff means unknown, not missing.
+    #
+    # This matters beyond noise. The loop's stop condition is "no P1, no P2" on the REPORTED
+    # severities, so a reviewer that re-flags deleted code can never reach it — the loop stops
+    # converging and starts costing money to re-litigate its own history. That is a stop
+    # condition that cannot be satisfied, which is strictly worse than one that is merely wrong.
     prompt = (prompt + note + "\n\nYou have NO filesystem or tool access. Review only "
-              "the diff between the delimiters.\n\nDIFF_START\n" + diff + "\nDIFF_END\n")
+              "the diff between the delimiters.\n\n"
+              "HOW TO READ THE DIFF — both of these produce false reports:\n"
+              "- Lines starting with '-' have been DELETED. They are not in the code any more. "
+              "Never report a defect in a '-' line, and never cite one as evidence that "
+              "behaviour still exists. Only '+' and context lines are the current code.\n"
+              "- A comment may describe what an EARLIER version did, usually to explain why it "
+              "was changed. Read it as history, not as a description of current behaviour.\n"
+              "- You are seeing a fragment. If a symbol, variable or function is used but not "
+              "defined in this diff, it is defined elsewhere in a file you cannot see — that is "
+              "expected and is NOT a finding. Report something as undefined only when the diff "
+              "itself removes or renames its definition.\n"
+              "Report only defects you can demonstrate from the '+' and context lines shown.\n"
+              "\nDIFF_START\n" + diff + "\nDIFF_END\n")
 
 # The stop condition ("no P1, no P2") is only as trustworthy as the count feeding it. Parsing
 # severities out of free-form markdown made the count depend on a heading style the model is
