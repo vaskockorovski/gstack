@@ -239,7 +239,11 @@ elif [ "$_OV_EXIT" != "0" ]; then
 fi
 ```
 
-**Take the severity counts from `$_OV_FINDINGS`, never by reading the prose.** The file is
+**If `$_OV_FINDINGS` does not exist after a successful run, the backend was `codex`** — it owns
+its own output format and cannot emit the block, so read its severities from its output as usual.
+A missing file after a *failed* run (exit 4) means something different and is covered below.
+
+**Otherwise take the severity counts from `$_OV_FINDINGS`, never by reading the prose.** The file is
 validated JSON — `{"p1":N,"p2":N,"p3":N,"findings":[…]}` — and the adapter refuses to write it
 unless the counts agree with the findings array. Counting `P1`/`P2` headings out of the prose is
 what this replaced: the heading style varies between rounds (`### P1-1` one round, `### P1.1`

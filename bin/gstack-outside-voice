@@ -189,7 +189,16 @@ cmd_exec() {
   case "$backend" in
     disabled) echo "OUTSIDE_VOICE_DISABLED phase=$phase" >&2; return 3 ;;
     codex)
-      [ -z "$findings_out" ] || die "--findings-out is not supported on the codex backend (codex owns its own output format); read its findings directly."
+      # WARN and continue, never die. The loop path always passes --findings-out, and
+      # outside_voice_loop DEFAULTS to codex — so dying here made `/codex review --loop` fail
+      # on every unconfigured install, i.e. the documented command was broken by the default
+      # configuration. Codex owns its own output format and cannot honour the block contract,
+      # so no findings file is written; the absence of the file is the signal to read codex's
+      # own output rather than a structured count.
+      if [ -n "$findings_out" ]; then
+        rm -f "$findings_out"
+        echo "gstack-outside-voice: note — the codex backend does not emit a structured findings block; no findings file written. Read codex's own output for severities." >&2
+      fi
       exec_codex "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" ;;
     openrouter) exec_openrouter "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$repo_context" "$base" "$findings_out" ;;
   esac
