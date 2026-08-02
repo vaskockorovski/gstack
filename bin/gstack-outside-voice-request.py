@@ -291,8 +291,8 @@ def parse_findings(text):
     if mismatch:
         sys.stderr.write(
             "WARNING: findings counts (p1=%d p2=%d p3=%d) disagree with the array "
-            "(P1=%d P2=%d P3=%d). Taking the larger of each — a count is never allowed to "
-            "under-report.\n"
+            "(P1=%d P2=%d P3=%d). Using the ARRAY, which is an enumeration and cannot "
+            "under-report what the reviewer actually listed.\n"
             % (obj["p1"], obj["p2"], obj["p3"], tally["P1"], tally["P2"], tally["P3"]))
     # Use the ARRAY, not max(). The comment above says the array is authoritative, and max()
     # quietly disagreed with it — a contradiction that turns into a hang: if the model
@@ -398,6 +398,13 @@ if findings_path:
         c_tok = add_toks(c_tok, toks(usage2, "completion_tokens"))
         text2 = content_of(payload2, lambda: write_usage(p_tok, c_tok, served))
         findings, why2 = parse_findings(text2)
+        if findings is not None:
+            # PROVENANCE. On a retried round the prose on stdout is the FIRST reply and the
+            # counts come from the SECOND, so they can legitimately disagree — the model
+            # re-enumerates from a summary of its own earlier answer and may drop or merge
+            # entries. Silently handing back counts from a different call than the review the
+            # reader is looking at is the kind of mismatch that gets blamed on the parser.
+            findings["from_retry"] = True
         if findings is None:
             sys.stderr.write(
                 "FINDINGS BLOCK UNUSABLE after one retry (%s). Refusing to report a severity "
@@ -414,7 +421,9 @@ if not text.endswith("\n"):
 if findings_path and findings is not None:
     with open(findings_path, "w") as fh:
         json.dump(findings, fh)
-    sys.stderr.write("findings: P1=%d P2=%d P3=%d\n"
-                     % (findings["p1"], findings["p2"], findings["p3"]))
+    sys.stderr.write("findings: P1=%d P2=%d P3=%d%s\n"
+                     % (findings["p1"], findings["p2"], findings["p3"],
+                        "  (counts came from the RE-PROMPT; the prose above is the first reply, "
+                        "so the two can differ)" if findings.get("from_retry") else ""))
 
 write_usage(p_tok, c_tok, served)

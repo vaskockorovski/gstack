@@ -280,23 +280,27 @@ elif [ -s "$TMPERR" ]; then
   echo "[outside-voice notes — the round SUCCEEDED; these qualify it]"
   head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
 fi
+# Emit the counts and delete the file HERE, in the block that created it. Anything that
+# defers cleanup to a later step is a step that can be skipped — three rounds reported this
+# file as leaked while the fix lived outside this block.
+if [ -f "$_OV_FINDINGS" ]; then
+  echo "OV_FINDINGS_JSON: $(cat "$_OV_FINDINGS")"
+  rm -f "$_OV_FINDINGS"
+else
+  echo "OV_FINDINGS_JSON: <none — backend was codex, or the round failed>"
+fi
 ```
 
 **If `$_OV_FINDINGS` does not exist after a successful run, the backend was `codex`** — it owns
 its own output format and cannot emit the block, so read its severities from its output as usual.
 A missing file after a *failed* run (exit 4) means something different and is covered below.
 
-Once you have read the counts, delete it — this is a step, not a suggestion:
-
-```bash
-rm -f "$_OV_FINDINGS"
-```
-
-It is a tempfile per round and nothing else cleans it up. The prompt file is removed
-immediately after the call; the findings file has to survive until it is read, which
-is exactly how it was missed. Stating it in prose was not enough either — the round
-after that fix still reported the leak, because a cleanup that is not in a code block
-does not get run.
+The block above already printed the findings JSON and deleted the file, so there is
+nothing left to clean up and nothing to remember. Three consecutive rounds reported
+this file as leaked while the fix moved from prose, to a note, to a separate code
+block — because every one of those still depended on a SECOND step being run. A
+cleanup that lives outside the block that created the file is a hope, not a cleanup.
+Read the counts from the JSON printed above.
 
 **Otherwise take the severity counts from `$_OV_FINDINGS`, never by reading the prose.** The file is
 validated JSON — `{"p1":N,"p2":N,"p3":N,"findings":[…]}` — and the adapter refuses to write it

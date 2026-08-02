@@ -68,6 +68,19 @@ _MAX_DIFF_BYTES="${GSTACK_OUTSIDE_VOICE_MAX_DIFF_BYTES:-1500000}"
 
 _cfg() { "$_CONFIG" get "$1" 2>/dev/null || echo ""; }
 
+# Strict variant for the keys that decide WHICH BACKEND SPENDS MONEY. _cfg collapses "the key
+# is unset" and "the config tool failed" into the same empty string, and empty resolves to
+# codex — so a malformed config or a broken helper bills the frontier backend for every loop
+# round, silently, because "" is a legitimate value rather than an error. The -x check added
+# earlier only catches a MISSING helper; one that exists and exits non-zero walked straight
+# past it. Exit status is the only thing that separates the two facts, so read it.
+_cfg_strict() {
+  local _v _rc=0
+  _v="$("$_CONFIG" get "$1" 2>/dev/null)" || _rc=$?
+  [ "$_rc" -eq 0 ] || die "cannot read '$1' from configuration ($_CONFIG exited $_rc). Refusing to assume a backend — an unreadable config is not an unconfigured one, and guessing bills the frontier price for every loop round."
+  printf '%s' "$_v"
+}
+
 die() { echo "gstack-outside-voice: $*" >&2; exit 2; }
 
 # --- backend resolution -----------------------------------------------------
@@ -82,8 +95,8 @@ resolve_backend() {
   # config is not the same fact as an unconfigured one; only the second is safe to default.
   [ -x "$_CONFIG" ] || die "cannot read configuration: $_CONFIG is missing or not executable. Refusing to assume a backend — guessing here bills the frontier price for every loop round."
   case "$phase" in
-    loop)       backend="$(_cfg outside_voice_loop)" ;;
-    final_gate) backend="$(_cfg outside_voice_gate)" ;;
+    loop)       backend="$(_cfg_strict outside_voice_loop)" ;;
+    final_gate) backend="$(_cfg_strict outside_voice_gate)" ;;
     *) die "unknown phase '$phase' (want: loop|final_gate)" ;;
   esac
   # UNSET resolves to codex — an unconfigured install must behave exactly as it did before
@@ -478,7 +491,7 @@ exec_openrouter() {
       # a clean round — the precise equivalence between "nothing wrong" and "nothing looked
       # at" that both guards exist to break. Introduced by the line-boundary fix itself.
       local _tsz
-      _tsz=$(wc -c < "$diff_file" | tr -d '"'"'[:space:]'"'"')
+      _tsz=$(wc -c < "$diff_file" | tr -d '[:space:]')
       if [ "${_tsz:-0}" -eq 0 ]; then
         die "the diff's first line alone exceeds ${_MAX_DIFF_BYTES} bytes, so truncating to a line boundary left nothing to review. Raise GSTACK_OUTSIDE_VOICE_MAX_DIFF_BYTES. Not reporting this as a clean round."
       fi
