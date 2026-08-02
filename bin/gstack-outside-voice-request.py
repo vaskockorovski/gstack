@@ -162,9 +162,22 @@ else:
     sys.exit(1)
 
 
+# --effort was accepted, validated against low|medium|high|xhigh, documented in the usage
+# text, exported into this process as OR_EFFORT — and never read. Every openrouter round ran at
+# whatever the model's default reasoning budget happened to be, while the caller believed it had
+# asked for `high`. A flag that is validated and then discarded is worse than one that does not
+# exist: the validation is what convinces you it works.
+#
+# OpenRouter's unified field is `reasoning.effort`, which takes low|medium|high. Codex's `xhigh`
+# has no counterpart, so it maps to high rather than being sent through to be rejected.
+_EFFORT = (os.environ.get("OR_EFFORT") or "high").strip().lower()
+REASONING_EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high"}.get(_EFFORT, "high")
+
+
 def ask(message):
     body = json.dumps({"model": model,
-                       "messages": [{"role": "user", "content": message}]}).encode("utf-8")
+                       "messages": [{"role": "user", "content": message}],
+                       "reasoning": {"effort": REASONING_EFFORT}}).encode("utf-8")
     req = urllib.request.Request(
         base_url.rstrip("/") + "/chat/completions",
         data=body,
@@ -227,8 +240,26 @@ def content_of(payload, on_fail=None):
     choices = payload.get("choices") or []
     text = (choices[0].get("message", {}).get("content") if choices else "") or ""
     if not text.strip():
-        sys.stderr.write("openrouter returned an empty response — the call was billed but "
-                         "produced nothing. NOT a clean round: nothing was reviewed.\n")
+        # WHY it is empty decides what to do about it, and the two causes need opposite
+        # responses. finish_reason == "length" means the model spent its entire output budget
+        # — on a reasoning model, usually on reasoning tokens — and never emitted content. That
+        # is a capacity limit, fixed by a smaller diff or a lower effort, and it gets worse as a
+        # branch grows: on this adapter's own loop the completion count climbed 37k, 39k, 47k,
+        # 63k across successive rounds and then stopped dead on 65536. Reporting that as "empty
+        # response" sends the reader looking for a transport fault that is not there.
+        reason = (choices[0].get("finish_reason") if choices else None) or "unknown"
+        usage = payload.get("usage") or {}
+        if reason == "length":
+            sys.stderr.write(
+                "openrouter hit the OUTPUT CAP before emitting any content (finish_reason="
+                "length, completion_tokens=%s). The call was billed. This is a capacity limit, "
+                "not a transport failure: the diff is large enough that the model exhausted its "
+                "output budget. Re-run with --effort medium, or narrow the review scope. NOT a "
+                "clean round: nothing was reviewed.\n" % usage.get("completion_tokens"))
+        else:
+            sys.stderr.write("openrouter returned an empty response (finish_reason=%s) — the "
+                             "call was billed but produced nothing. NOT a clean round: nothing "
+                             "was reviewed.\n" % reason)
         bail()
     return text
 
