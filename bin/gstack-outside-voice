@@ -128,10 +128,13 @@ resolve_backend() {
 # distinguish them is how the typo survives.
 probe() {
   local phase="$1" backend
+  # Master switch first, for the same reason as cmd_exec: with reviews off, a misnamed backend
+  # has no consequences, and reporting `misconfigured` there sends the operator to fix a value
+  # nothing will read.
+  if [ "$(_cfg codex_reviews)" = "disabled" ]; then echo "disabled"; return 0; fi
   backend="$(resolve_backend "$phase")"
 
   if [ "$backend" = "misconfigured" ]; then echo "misconfigured"; return 0; fi
-  if [ "$(_cfg codex_reviews)" = "disabled" ]; then echo "disabled"; return 0; fi
   if [ "$backend" = "disabled" ]; then echo "disabled"; return 0; fi
 
   if [ "$backend" = "codex" ]; then
@@ -335,17 +338,22 @@ cmd_exec() {
       || die "not in a git repo and --repo-root not given"
   fi
 
-  local backend
-  backend="$(resolve_backend "$phase")"
-
   # The master switch is enforced HERE, not only in probe(). A caller that invokes `exec`
   # directly — which the skill bodies do — otherwise bypasses `codex_reviews=disabled`
   # entirely, so a user who explicitly turned external review off still gets billed. Two
   # settings that both mean "no outside voice" must not be able to disagree.
+  #
+  # Checked BEFORE the backend is resolved. Once reviews are off, which backend would have run
+  # is a question with no consequences — and resolving it can now REFUSE (a typo'd value, an
+  # erroring config helper), so a user who had switched the whole feature off was being handed
+  # an error about a backend that was never going to be used. The off switch outranks it.
   if [ "$(_cfg codex_reviews)" = "disabled" ]; then
     echo "OUTSIDE_VOICE_DISABLED codex_reviews=disabled" >&2
     return 3
   fi
+
+  local backend
+  backend="$(resolve_backend "$phase")"
 
   preflight_gate "$phase" "$repo_root"
 
@@ -454,7 +462,10 @@ exec_openrouter() {
     # the failure this trap was added to prevent, reintroduced by the very checks added
     # alongside it. Re-armed after resp_file is created to cover both.
     # shellcheck disable=SC2064
-    trap "rm -f '$diff_file'" EXIT INT TERM
+    # `.cut` too: the truncation step writes it, then moves it over $diff_file. If that
+    # pipeline aborts between the two, set -e exits, the trap fires, and the intermediate
+    # survives — holding the same full source of every changed file the trap exists to remove.
+    trap "rm -f '$diff_file' '$diff_file.cut'" EXIT INT TERM
     # REFUSE rather than fall back. An earlier version fell back to `git diff HEAD` when the
     # base ref could not be resolved — which silently swaps "review this branch" for "review
     # my uncommitted edits". On a shallow clone, an unfetched fork remote, or a typo'd --base
@@ -515,7 +526,7 @@ exec_openrouter() {
   # --repo-context none means there is no diff file at all.
   # shellcheck disable=SC2064
   if [ -n "$diff_file" ]; then
-    trap "rm -f '$resp_file' '$diff_file'" EXIT INT TERM
+    trap "rm -f '$resp_file' '$diff_file' '$diff_file.cut'" EXIT INT TERM
   else
     trap "rm -f '$resp_file'" EXIT INT TERM
   fi

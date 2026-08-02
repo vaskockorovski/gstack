@@ -89,6 +89,35 @@ describe('backend resolution refuses to guess', () => {
   });
 });
 
+describe('outsideVoicePreflight renders valid bash', () => {
+  // `$${m}` inside a TS template literal is a LITERAL $ followed by an interpolation, so it
+  // renders `$_CODEX_MODE`. A reviewer read it as `$$` + name — bash's PID variable — and
+  // filed it as a P1 twice. It is correct, but it is correct in a way that has now cost two
+  // review rounds to re-establish, and the "fix" would silently break every downstream branch.
+  // Assert the rendered output instead of arguing about the source: `$$` must not survive.
+  test('the mode variable renders as a name, not as $$ (the PID)', async () => {
+    const { outsideVoicePreflight } = await import('../scripts/resolvers/constants');
+    for (const phase of ['loop', 'final_gate'] as const) {
+      const out = outsideVoicePreflight({ phase, disabledBehavior: 'codex-only' });
+      expect(out).toContain('_CODEX_MODE=$(');
+      expect(out).toContain('echo "CODEX_MODE: $_CODEX_MODE"');
+      expect(out).not.toContain('$$');
+    }
+  });
+
+  // The probe grew a fifth state. The generated branch table is the only thing telling a
+  // consuming skill what to do with it, and it silently lagged for four rounds.
+  test('the branch table covers every state probe can emit', async () => {
+    const { outsideVoicePreflight } = await import('../scripts/resolvers/constants');
+    const out = outsideVoicePreflight({ phase: 'loop', disabledBehavior: 'skip-all' });
+    const adapter = fs.readFileSync(ADAPTER, 'utf-8');
+    const probeBody = adapter.slice(adapter.indexOf('probe() {'), adapter.indexOf('# --- usage log'));
+    const emitted = new Set([...probeBody.matchAll(/echo "(disabled|not_installed|not_authed|ready|misconfigured)"/g)].map((m) => m[1]));
+    expect(emitted.size).toBeGreaterThanOrEqual(5);
+    for (const state of emitted) expect(out).toContain(`\`${state}\``);
+  });
+});
+
 describe('the usage log never reports an unknown cost as zero', () => {
   // The codex CLI reports no token counts, so those rows carried a hard 0. That is not
   // "unknown", it is "free" — and it is the wrong answer in the one analysis this log exists
