@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 # gstack-outside-voice — one command for every external review call.
 #
-# Replaces the hardcoded `codex exec` scattered across 12+ skills with a single
-# adapter that resolves a BACKEND per review PHASE, so the iterative loop can run
-# on a cheap model while the final gate stays on a frontier one.
+# A single adapter that resolves a BACKEND per review PHASE, so the iterative loop can
+# run on a cheap model while the final gate stays on a frontier one.
+#
+# SCOPE — what is wired today, stated so no reader has to trust a plan as a fact.
+# `/codex` is the ONLY skill routed through this adapter (both its loop path and its
+# final gate). Thirteen other skills — autoplan, design-consultation, design-review,
+# document-release, office-hours, plan-{ceo,design,devex,eng}-review, review, ship
+# (adversarial + review-army), spec — still call `codex exec` directly and are
+# unaffected by outside_voice_* config. Migrating them is the intent of gstack #619
+# and is NOT done here; grep for `codex exec "` to re-derive this list rather than
+# trusting this comment, which is the only thing keeping it honest.
 #
 # Usage:
 #   gstack-outside-voice exec --phase <loop|final_gate> --prompt-file <f> [opts]
