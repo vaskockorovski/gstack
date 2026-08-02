@@ -56,11 +56,17 @@ resolve_backend() {
     final_gate) backend="$(_cfg outside_voice_gate)" ;;
     *) die "unknown phase '$phase' (want: loop|final_gate)" ;;
   esac
-  # An unset/unknown value resolves to codex — an unconfigured install must behave
-  # exactly as it did before this adapter existed.
+  # UNSET resolves to codex — an unconfigured install must behave exactly as it did before
+  # this adapter existed. But an unset value and a MISRECOGNISED one are different facts, and
+  # collapsing them is how `gstack-config set` earns its reject-on-invalid rule and then loses
+  # it: the config file can be hand-edited, and `outside_voice_loop: opnerouter` would fall
+  # through to codex — silently rerouting the cheap loop to the expensive backend, the exact
+  # outcome the setter validation exists to prevent. Warn on the typo; never guess silently.
   case "$backend" in
     codex|openrouter|disabled) printf '%s' "$backend" ;;
-    *) printf 'codex' ;;
+    "") printf 'codex' ;;
+    *) echo "gstack-outside-voice: WARNING — $phase backend '$backend' is not recognised (want: codex|openrouter|disabled); falling back to codex. Fix ~/.gstack/config.yaml." >&2
+       printf 'codex' ;;
   esac
 }
 
@@ -105,8 +111,24 @@ log_usage() {
   mkdir -p "$_STATE_DIR/analytics" 2>/dev/null || return 0
   local _ts
   _ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
+  # Strip anything that would break the line. --label and the config-supplied model are
+  # free-form input concatenated straight into JSON: one `"` or newline corrupts the row, and
+  # this file is what the cost analysis reads — a malformed line is a silently missing
+  # measurement, not a visible error. Restricting to a safe character class is enough here
+  # and avoids a jq dependency in the logging path.
+  local _b _m _p _l _st
+  _b=$(printf '%s' "$1"  | tr -cd 'A-Za-z0-9._-')
+  _m=$(printf '%s' "$2"  | tr -cd 'A-Za-z0-9._/:-')
+  _p=$(printf '%s' "$3"  | tr -cd 'A-Za-z0-9._-')
+  _l=$(printf '%s' "$4"  | tr -cd 'A-Za-z0-9._-')
+  _st=$(printf '%s' "$7" | tr -cd 'A-Za-z0-9._-')
+  # Token counts come from the API but are interpolated unquoted, so a non-numeric value
+  # would produce invalid JSON rather than a wrong number.
+  local _pt _ct
+  _pt=$(printf '%s' "${5:-0}" | tr -cd '0-9'); [ -n "$_pt" ] || _pt=0
+  _ct=$(printf '%s' "${6:-0}" | tr -cd '0-9'); [ -n "$_ct" ] || _ct=0
   printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"status":"%s","ts":"%s"}\n' \
-    "$1" "$2" "$3" "$4" "${5:-0}" "${6:-0}" "$7" "$_ts" \
+    "$_b" "$_m" "$_p" "$_l" "$_pt" "$_ct" "$_st" "$_ts" \
     >> "$_STATE_DIR/analytics/outside-voice.jsonl" 2>/dev/null || true
 }
 
@@ -154,8 +176,17 @@ cmd_exec() {
   local backend
   backend="$(resolve_backend "$phase")"
 
+  # The master switch is enforced HERE, not only in probe(). A caller that invokes `exec`
+  # directly — which the skill bodies do — otherwise bypasses `codex_reviews=disabled`
+  # entirely, so a user who explicitly turned external review off still gets billed. Two
+  # settings that both mean "no outside voice" must not be able to disagree.
+  if [ "$(_cfg codex_reviews)" = "disabled" ]; then
+    echo "OUTSIDE_VOICE_DISABLED codex_reviews=disabled" >&2
+    return 3
+  fi
+
   case "$backend" in
-    disabled) echo "OUTSIDE_VOICE_DISABLED" >&2; return 3 ;;
+    disabled) echo "OUTSIDE_VOICE_DISABLED phase=$phase" >&2; return 3 ;;
     codex)      exec_codex      "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" ;;
     openrouter) exec_openrouter "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$repo_context" "$base" ;;
   esac
@@ -197,12 +228,32 @@ exec_openrouter() {
   local truncated="no"
   if [ "$repo_context" = "diff" ]; then
     diff_file=$(mktemp "${TMPDIR:-/tmp}/gstack-ov-diff-XXXXXXXX.txt")
-    # shellcheck disable=SC2086
+    # Armed IMMEDIATELY, before any of the refusal paths below can `die`. Arming it later —
+    # once the response file also exists — left every early exit leaking the diff, which is
+    # the failure this trap was added to prevent, reintroduced by the very checks added
+    # alongside it. Re-armed after resp_file is created to cover both.
+    # shellcheck disable=SC2064
+    trap "rm -f '$diff_file'" EXIT INT TERM
+    # REFUSE rather than fall back. An earlier version fell back to `git diff HEAD` when the
+    # base ref could not be resolved — which silently swaps "review this branch" for "review
+    # my uncommitted edits". On a shallow clone, an unfetched fork remote, or a typo'd --base
+    # that produces a near-empty diff, a review of almost nothing returns "no P1/P2" and exits
+    # 0, and the caller reads it as a clean round. That is the same defect the truncation
+    # warning exists to prevent, arriving through a door the truncation check cannot see:
+    # the file is not oversized, it is wrong.
+    if ! git -C "$repo_root" rev-parse --verify --quiet "$base" >/dev/null 2>&1; then
+      die "base ref '$base' does not resolve in $repo_root. Fetch it (git fetch <remote>) or pass --base. Refusing to review a different diff than the one asked for."
+    fi
     if ! git -C "$repo_root" diff "$base"...HEAD > "$diff_file" 2>/dev/null; then
-      git -C "$repo_root" diff HEAD > "$diff_file" 2>/dev/null || true
+      die "could not compute 'git diff $base...HEAD' in $repo_root. Refusing to substitute a different diff."
     fi
     local _sz
     _sz=$(wc -c < "$diff_file" | tr -d '[:space:]')
+    # An EMPTY diff is not a clean review, it is no review. Saying so is the difference
+    # between "nothing is wrong" and "nothing was looked at".
+    if [ "${_sz:-0}" -eq 0 ]; then
+      die "'git diff $base...HEAD' is empty — there is nothing to review. Not reporting this as a clean round."
+    fi
     if [ "${_sz:-0}" -gt "$_MAX_DIFF_BYTES" ]; then
       truncated="yes"
       head -c "$_MAX_DIFF_BYTES" "$diff_file" > "$diff_file.cut" && mv "$diff_file.cut" "$diff_file"
@@ -212,9 +263,17 @@ exec_openrouter() {
   local resp_file
   resp_file=$(mktemp "${TMPDIR:-/tmp}/gstack-ov-resp-XXXXXXXX.json")
 
+  # The diff tempfile holds the full source of every changed file. Removing it only on the
+  # success path meant a `timeout` SIGTERM — the routine outcome this script is wrapped in —
+  # left that content in /tmp indefinitely. Trap covers the signal paths; the explicit rm at
+  # the end stays, so behaviour is unchanged when nothing goes wrong.
+  # shellcheck disable=SC2064
+  trap "rm -f '$resp_file' ${diff_file:+\"'$diff_file'\"}" EXIT INT TERM
+
   local rc=0
   OR_MODEL="$model" OR_PROMPT_FILE="$prompt_file" OR_DIFF_FILE="$diff_file" \
   OR_TRUNCATED="$truncated" OR_EFFORT="$effort" OR_RESP="$resp_file" \
+  OR_TIMEOUT="$timeout_s" \
   GSTACK_OUTSIDE_VOICE_BASE_URL="${GSTACK_OUTSIDE_VOICE_BASE_URL:-}" \
   with_timeout "$timeout_s" python3 -c '
 import json, os, sys, urllib.request, urllib.error
@@ -250,7 +309,12 @@ req = urllib.request.Request(
     },
 )
 try:
-    with urllib.request.urlopen(req) as r:
+    # A per-socket timeout, not just the shell wrapper. Without it a server that completes the
+    # handshake and then stalls holds the read open until the outer `timeout` kills the whole
+    # process group — by which point the request is already billed and nothing is returned.
+    # Kept below the shell budget so python reports the failure rather than dying mid-read.
+    _sock_timeout = max(30, int(os.environ.get("OR_TIMEOUT", "330")) - 30)
+    with urllib.request.urlopen(req, timeout=_sock_timeout) as r:
         payload = json.load(r)
 except urllib.error.HTTPError as e:
     # Print the API error WITHOUT echoing the request (which carries no secret,
