@@ -1110,11 +1110,16 @@ Label each finding with a literal marker [P1] (critical), [P2] (advisory) or [P3
 PROMPT
 # 330s (5.5min) is slightly longer than the Bash 300s so the shell wrapper
 # only fires if Bash's own timeout doesn't.
+# SET THIS LINE from Step 0.3: `xhigh` if the user passed --xhigh, otherwise `high`.
+# Hard-coding `high` here silently dropped the documented override. Round 21 fixed the
+# LOOP invocation and left these two — the same first-site-vs-sibling miss this run keeps
+# making, so all THREE adapter call sites are now enumerated and carry a resolved effort.
+_REVIEW_EFFORT=high
 ~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
   --phase final_gate --codex-mode review \
   --prompt-file "$_GATE_PROMPT" --repo-root "$_REPO_ROOT" \
   --base "origin/<base>" \
-  --effort high --timeout 330 --findings-out "$_GATE_FINDINGS" < /dev/null 2>"$TMPERR"
+  --effort "$_REVIEW_EFFORT" --timeout 330 --findings-out "$_GATE_FINDINGS" < /dev/null 2>"$TMPERR"
 _CODEX_EXIT=$?
 rm -f "$_GATE_PROMPT"
 if [ "$_CODEX_EXIT" = "124" ]; then
@@ -1234,6 +1239,22 @@ _OV_OUT="$TMP_ROOT/gstack-ov-out-$_OV_LANE.txt"
 # the user typed and the skill documents, dropped without a word, is worse than not offering it.
 # SET THIS LINE: `xhigh` if the user passed --xhigh, otherwise `medium`.
 _OV_EFFORT=medium
+# Recover a DEAD round before deciding whether to relaunch. The launch marker is deliberately
+# kept on exit 125 (a round still running must be polled, not duplicated), but 125's own message
+# tells the operator to find and kill an orphaned uncapped call — and after they do, the marker
+# outlives the process, no done-marker ever appears, and every re-run reports ROUND STILL RUNNING
+# for a child that no longer exists. The advice and the state machine disagreed, so following the
+# instructions wedged the loop until the tempfiles were deleted by hand.
+#
+# PID recorded at launch, so "still running" can be checked rather than assumed. A recycled PID
+# could in principle make a dead round look alive; that only costs another poll cycle, whereas
+# the failure this replaces was permanent.
+_OV_PID="$TMP_ROOT/gstack-ov-pid-$_OV_LANE"
+if [ -f "$_OV_LAUNCHED" ] && [ ! -f "$_OV_DONE" ] && [ -s "$_OV_PID" ] \
+   && ! kill -0 "$(cat "$_OV_PID")" 2>/dev/null; then
+  echo "note — the previous round's process is gone and never wrote an exit marker (killed, or its shell was terminated). Clearing the stale launch marker and starting a fresh round."
+  rm -f "$_OV_LAUNCHED" "$_OV_DONE" "$_OV_OUT" "$_OV_PID"
+fi
 if [ ! -f "$_OV_LAUNCHED" ]; then
 touch "$_OV_LAUNCHED"
 # Paths travel as ARGV, never spliced into the script text. The `'"$VAR"'` idiom this replaced
@@ -1252,6 +1273,8 @@ nohup bash -c '~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit 
   --base "origin/<base>" --effort "$6" --timeout 900 \
   --findings-out "$3" < /dev/null 2>"$4"
 echo $? > "$5"' _ "$_LOOP_PROMPT" "$_REPO_ROOT" "$_OV_FINDINGS" "$TMPERR" "$_OV_DONE" "$_OV_EFFORT" > "$_OV_OUT" 2>&1 &
+# Record the child so a later re-entry can tell "still running" from "died silently".
+echo $! > "$_OV_PID"
 fi
 # Poll the marker rather than waiting inline, so the host cap never sees a long call.
 # Bounded to fit the host cap: 55 x 10s = 550s inside a 600000 maximum.
@@ -1276,7 +1299,7 @@ else
   # that has not happened, and deleting the findings file would race a writer that is about to
   # produce it. Neither the exit code nor the file is ours to touch yet.
   _OV_EXIT=125
-  echo "ROUND STILL RUNNING — not finished within this 550s poll window. This is NOT a failure and NOT a timeout: the adapter is allowed 900s. RE-RUN THIS BLOCK to keep polling the same child; it will not start a second review. If neither gtimeout nor timeout is installed the adapter warned that it ran UNCAPPED, in which case the call is not bounded by anything and is now orphaned: find it with 'ps -eo pid,etime,cmd | grep gstack-outside-voice' and kill it by PID before re-running, or it keeps billing. This is NOT a clean round and NOT a timeout; nothing has been established. The findings file is left in place for the running call."
+  echo "ROUND STILL RUNNING — not finished within this 550s poll window. This is NOT a failure and NOT a timeout: the adapter is allowed 900s. RE-RUN THIS BLOCK to keep polling the same child; it will not start a second review. If neither gtimeout nor timeout is installed the adapter warned that it ran UNCAPPED, in which case the call is not bounded by anything and is now orphaned: find it with 'ps -eo pid,etime,cmd | grep gstack-outside-voice' and kill it by PID before re-running, or it keeps billing. Killing it is safe to act on now: the next run of this block sees the process is gone, clears the stale launch marker and starts a fresh round, instead of polling a dead child forever. This is NOT a clean round and NOT a timeout; nothing has been established. The findings file is left in place for the running call."
 fi
 rm -f "$_LOOP_PROMPT"
 if [ "$_OV_EXIT" = "124" ]; then
@@ -1339,7 +1362,7 @@ else
 fi
 # Not on 125: a still-running call is about to write this file, and deleting it would race
 # the writer and destroy the round's only machine-readable result.
-[ "$_OV_EXIT" = "125" ] || rm -f "$_OV_FINDINGS" "$_OV_OUT" "$_OV_DONE" "$_OV_LAUNCHED"
+[ "$_OV_EXIT" = "125" ] || rm -f "$_OV_FINDINGS" "$_OV_OUT" "$_OV_DONE" "$_OV_LAUNCHED" "$_OV_PID"
 ```
 
 **If `$_OV_FINDINGS` does not exist after a successful run, the backend was `codex`** — it owns
@@ -1437,11 +1460,16 @@ _PROMPT_FILE=$(mktemp "$TMP_ROOT/codex-prompt-XXXXXX.txt")
 # prompt now carries the same dual-backend wording the gate uses: run git diff if you can,
 # otherwise the diff is below.
 _FOCUS_FINDINGS=$(mktemp "$TMP_ROOT/gstack-focus-findings-XXXXXX.json")
+# SET THIS LINE from Step 0.3: `xhigh` if the user passed --xhigh, otherwise `high`.
+# Hard-coding `high` here silently dropped the documented override. Round 21 fixed the
+# LOOP invocation and left these two — the same first-site-vs-sibling miss this run keeps
+# making, so all THREE adapter call sites are now enumerated and carry a resolved effort.
+_REVIEW_EFFORT=high
 ~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
   --phase final_gate --codex-mode exec \
   --prompt-file "$_PROMPT_FILE" --repo-root "$_REPO_ROOT" \
   --base "origin/<base>" \
-  --effort high --timeout 330 --findings-out "$_FOCUS_FINDINGS" < /dev/null 2>"$TMPERR"
+  --effort "$_REVIEW_EFFORT" --timeout 330 --findings-out "$_FOCUS_FINDINGS" < /dev/null 2>"$TMPERR"
 _CODEX_EXIT=$?
 rm -f "$_PROMPT_FILE"
 if [ "$_CODEX_EXIT" = "124" ]; then

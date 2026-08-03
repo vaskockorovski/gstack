@@ -549,6 +549,33 @@ describe('the adapter survives a HOME-less environment', () => {
   });
 });
 
+// Step 0.3 promises `--xhigh` overrides the per-mode default for every review mode. Round 21
+// honoured that on the LOOP invocation and left the other two hard-coded at `high`, so the
+// override still vanished on the default gate and the custom-focus branch. That is the
+// first-site-vs-sibling miss this run has made ten times, so the invariant is pinned over the
+// enumerated SET of call sites rather than over the one that was reported.
+describe('every adapter invocation carries a resolved effort, not a literal', () => {
+  const files = [
+    ['generated skill', path.join(ROOT, 'codex', 'SKILL.md')],
+    ['template', path.join(ROOT, 'codex', 'SKILL.md.tmpl')],
+  ] as const;
+
+  test.each(files)('%s: all three call sites are present', (_l, f) => {
+    const calls = fs.readFileSync(f, 'utf-8').match(/gstack-outside-voice exec --explicit/g) ?? [];
+    // If this count changes, a call site was added or removed — go and give it an effort
+    // variable too, rather than updating the number.
+    expect(calls.length).toBe(3);
+  });
+
+  test.each(files)('%s: no invocation hard-codes its effort', (_l, f) => {
+    const text = fs.readFileSync(f, 'utf-8');
+    expect(text).not.toMatch(/--effort (high|medium|low|xhigh)\b/);
+    // The two review paths share one variable; the loop passes its own through argv.
+    expect(text).toContain('--effort "$_REVIEW_EFFORT"');
+    expect(text).toContain('--effort "$6"');
+  });
+});
+
 describe('the retry prompt cannot feed a live fence back to the model', () => {
   const REQUEST = path.join(ROOT, 'bin', 'gstack-outside-voice-request.py');
 
