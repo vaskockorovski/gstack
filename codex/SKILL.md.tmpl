@@ -220,11 +220,14 @@ if [ "$_CODEX_EXIT" = "124" ]; then
   _gstack_codex_log_event "codex_timeout" "330"
   _gstack_codex_log_hang "review" "$(wc -c < "$TMPERR" 2>/dev/null || echo 0)"
   echo "Codex stalled past 5.5 minutes. Common causes: model API stall, long prompt, network issue. Try re-running. If persistent, split the prompt or check ~/.codex/logs/."
-elif [ "$_CODEX_EXIT" = "2" ] || [ "$_CODEX_EXIT" = "3" ] || [ "$_CODEX_EXIT" = "5" ]; then
+elif [ "$_CODEX_EXIT" = "2" ] || [ "$_CODEX_EXIT" = "3" ] || [ "$_CODEX_EXIT" = "4" ] || [ "$_CODEX_EXIT" = "5" ]; then
   # The ADAPTER's own exit codes, not codex's: 2 refused input (unrecognised backend,
   # unreadable config, bad base ref), 3 outside-voice disabled for this phase, 5 no pre-flight
-  # sweep recorded. Reporting these as "[codex exit N]" sends the reader to codex's logs for a
-  # configuration problem the adapter already named on stderr. NONE of them is a clean gate.
+  # sweep recorded, 4 findings block unusable. Reporting these as "[codex exit N]" sends the
+  # reader to codex's logs for a problem the adapter already named on stderr. 4 cannot occur
+  # while outside_voice_gate is codex — codex owns its output format and is never asked for the
+  # block — but the key is configurable, so leaving it out made the branch correct only for the
+  # default. NONE of these is a clean gate.
   echo "GATE NOT RUN (adapter exit $_CODEX_EXIT) — NOT a clean gate; nothing was reviewed."
   head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
   _gstack_codex_log_event "outside_voice_refused" "gate:$_CODEX_EXIT"
@@ -287,7 +290,7 @@ if [ "$_OV_EXIT" = "124" ]; then
   # Named for the BACKEND that actually timed out. `codex_timeout` on an openrouter round is
   # a wrong row in gstack's own analytics, and a wrong row is worse than a missing one because
   # nothing distinguishes it from a right one at read time.
-  _gstack_codex_log_event "outside_voice_timeout" "loop:${_OV_BACKEND:-unknown}:900"
+  _gstack_codex_log_event "outside_voice_timeout" "loop:$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase loop 2>/dev/null || echo unknown):900"
 elif [ "$_OV_EXIT" = "4" ]; then
   # The reviewer ran but its severity block could not be parsed. This is NOT a clean round.
   echo "ROUND INVALID — findings block unusable. Do NOT count this as satisfying the stop condition; re-run the round."

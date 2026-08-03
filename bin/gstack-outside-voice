@@ -181,7 +181,8 @@ probe() {
 
 log_usage() {
   # $1 backend  $2 model  $3 phase  $4 label  $5 prompt_tokens  $6 completion_tokens
-  # $7 status. NEVER records prompt text, diff content, or credentials.
+  # $7 status  $8 tokens_partial ("true"/"false")  $9 reasoning_tokens (or "unknown")
+  # NEVER records prompt text, diff content, or credentials.
   [ "$(_cfg telemetry)" = "off" ] && return 0
   mkdir -p "$_STATE_DIR/analytics" 2>/dev/null || return 0
   local _ts
@@ -432,6 +433,14 @@ cmd_exec() {
 
   case "$backend" in
     codex)
+      # --pathspec is meaningless here and must not pass silently. The codex backend explores
+      # the REPOSITORY; it is never handed the inlined diff that a pathspec scopes. A caller
+      # that scoped the loop and then ran the gate the same way would believe both were
+      # reviewing the same slice while the gate reviewed everything — a scope mismatch that
+      # looks like agreement between the tiers and is the opposite of it.
+      if [ ${#pathspecs[@]} -gt 0 ]; then
+        echo "gstack-outside-voice: WARNING — --pathspec is ignored by the codex backend, which reads the repository rather than an inlined diff. This review is NOT scoped to ${pathspecs[*]}." >&2
+      fi
       # WARN and continue, never die. The loop path always passes --findings-out, and
       # outside_voice_loop DEFAULTS to codex — so dying here made `/codex review --loop` fail
       # on every unconfigured install, i.e. the documented command was broken by the default
