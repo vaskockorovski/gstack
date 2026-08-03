@@ -435,7 +435,17 @@ case "${1:-}" in
     ;;
   list)
     if [ -f "$CONFIG_FILE" ]; then
-      cat "$CONFIG_FILE"
+      # Guarded. Under `set -e` an unreadable config killed `list` right here, so the command
+      # people run to DIAGNOSE a broken config produced a bare `cat: Permission denied` and no
+      # active values at all — while `get` on the same file already reported the condition in
+      # words and named the path. Say the same thing here, then carry on and print the defaults,
+      # clearly marked, rather than exiting with nothing.
+      if [ -r "$CONFIG_FILE" ]; then
+        cat "$CONFIG_FILE"
+      else
+        echo "# ⚠ $CONFIG_FILE exists but is NOT READABLE — check its permissions."
+        echo "# The active values below are DEFAULTS; the file's real contents could not be read."
+      fi
     fi
     echo ""
     echo "# ─── Active values (including defaults for unset keys) ───"
@@ -455,8 +465,22 @@ case "${1:-}" in
       # diagnostic contradicted the tool it exists to explain, and did it precisely when someone
       # was running `list` to find out why their backend would not start. Hardening `get` alone
       # moved the silence here rather than removing it.
-      VALUE=$("$0" get "$KEY" 2>/dev/null || true)
+      # `|| true` swallowed a FAILING `get`, which is the same defect this loop was rewritten to
+      # remove, one layer along. `get` exits non-zero when the config exists but cannot be read;
+      # discarding that status left VALUE empty, which then rendered as the DEFAULT — so in the
+      # one failure mode a user runs `list` to diagnose, the diagnostic reported a value the key
+      # does not have and called it a default. Consume the status and name the condition.
+      # `VALUE=$(cmd); RC=$?` does NOT work under `set -e`: a failing command substitution in an
+      # assignment aborts the shell before the next statement runs, so the status is never read
+      # and the loop dies silently — which is how the first version of this guard printed the
+      # warning and then no active values at all. `|| RC=$?` is the form that survives.
+      _GETRC=0
+      VALUE=$("$0" get "$KEY" 2>/dev/null) || _GETRC=$?
       if grep -qE "^${KEY}:" "$CONFIG_FILE" 2>/dev/null; then SOURCE="set"; else SOURCE="default"; fi
+      if [ "$_GETRC" -ne 0 ]; then
+        printf '  %-24s %s (%s)\n' "$KEY:" "UNREADABLE — \`get\` exited $_GETRC; check permissions on $CONFIG_FILE" "error"
+        continue
+      fi
       # `get`'s sentinel for "present but unusable". Name it, rather than rendering the sentinel
       # or, worse, a value the key does not have.
       if [ "$VALUE" = "__blank__" ]; then

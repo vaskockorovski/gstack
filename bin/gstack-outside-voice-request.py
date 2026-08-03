@@ -78,6 +78,20 @@ def _validate_base_url(base_url):
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
 
+def _endpoint(base_url):
+    """The URL a request ACTUALLY goes to. One expression, used by both the request and the
+    redirect probe.
+
+    The probe checked `base_url` while the request appends `/chat/completions`, so a gateway
+    that serves the base path but redirects the endpoint — a trailing-slash rule or a proxy
+    rewrite is enough — passed probe as `ready` and was refused at request time. That is the
+    same probe/exec split this whole family keeps reproducing, one layer in: the two sides
+    agreed on the POLICY and disagreed about the URL they were applying it to. Deriving the
+    endpoint once is what stops a sixth variant.
+    """
+    return base_url.rstrip("/") + "/chat/completions"
+
+
 def _redirects(base_url, timeout=5):
     """Does this base URL answer with a redirect? Returns (is_redirect, detail-or-None).
 
@@ -96,7 +110,7 @@ def _redirects(base_url, timeout=5):
         wrong, which is a worse lie than the one being fixed. exec still fail-closes, so the
         guarantee is preserved either way; this only moves the refusal earlier when it can.
     """
-    req = urllib.request.Request(base_url, method="HEAD")
+    req = urllib.request.Request(_endpoint(base_url), method="HEAD")
 
     class _NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -384,7 +398,7 @@ def ask(message, on_fail=None):
                        "messages": [{"role": "user", "content": message}],
                        "reasoning": {"effort": REASONING_EFFORT}}).encode("utf-8")
     req = urllib.request.Request(
-        base_url.rstrip("/") + "/chat/completions",
+        _endpoint(base_url),
         data=body,
         headers={
             "Authorization": "Bearer " + _KEY,

@@ -274,7 +274,13 @@ log_usage() {
   # and avoids a jq dependency in the logging path.
   local _b _m _p _l _st
   _b=$(printf '%s' "$1"  | tr -cd 'A-Za-z0-9._-')
-  _m=$(printf '%s' "$2"  | tr -cd 'A-Za-z0-9._/:-')
+  # `+` is in the class because a RETRIED round whose retry routed to a different upstream
+  # records both as `first+second`. Stripping it fused two model ids into one
+  # unattributable string — worse than the single wrong id this was meant to fix, and on
+  # exactly the rows the cost and hit-rate comparison depends on. The sanitizer's job is to
+  # strip what would BREAK the line; `+` needs no JSON escaping and breaks nothing, so
+  # excluding it was over-broad rather than safe.
+  _m=$(printf '%s' "$2"  | tr -cd 'A-Za-z0-9._/:+-')
   _p=$(printf '%s' "$3"  | tr -cd 'A-Za-z0-9._-')
   _l=$(printf '%s' "$4"  | tr -cd 'A-Za-z0-9._-')
   _st=$(printf '%s' "$7" | tr -cd 'A-Za-z0-9._-')
