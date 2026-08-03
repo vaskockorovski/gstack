@@ -452,7 +452,11 @@ def add_toks(a, b):
     """Sum two possibly-unknown counts.
 
     None + None stays None — nothing was reported, so nothing is known. None + n yields n,
-    which is a genuine partial and is at least non-zero, so it can never be read as free.
+    which is at least non-zero and so can never be read as free — but it is a PARTIAL, and
+    returning it bare presents a figure that is short by one billed call as though it were
+    exact. That is the same class as the 0-means-free defect this file has now fixed in four
+    places, one step subtler: not a wrong number, a number missing its uncertainty. The caller
+    records `tokens_partial` alongside it so an analysis can see the difference.
     """
     if a is None:
         return b
@@ -461,11 +465,18 @@ def add_toks(a, b):
     return a + b
 
 
-def write_usage(prompt_tokens, completion_tokens, served_model):
+def toks_partial(*values):
+    """True when SOME contributing call reported usage and some did not."""
+    known = [v is not None for v in values]
+    return any(known) and not all(known)
+
+
+def write_usage(prompt_tokens, completion_tokens, served_model, partial=False):
     with open(os.environ["OR_RESP"], "w") as fh:
         json.dump({"prompt_tokens": prompt_tokens,
                    "completion_tokens": completion_tokens,
-                   "model": served_model}, fh)
+                   "model": served_model,
+                   "tokens_partial": bool(partial)}, fh)
 
 
 # No on_fail on THIS call, deliberately — reported as a defect twice, so state why. Nothing
@@ -480,6 +491,10 @@ usage = payload.get("usage") or {}
 p_tok = toks(usage, "prompt_tokens")
 c_tok = toks(usage, "completion_tokens")
 served = payload.get("model", model)
+# Set only by the retry path, but declared here so every write_usage call site can name it
+# unconditionally. Reaching for locals().get() to paper over a maybe-undefined name is how a
+# NameError becomes a runtime surprise on the one path nobody exercises.
+PARTIAL = False
 text = content_of(payload, lambda: write_usage(p_tok, c_tok, served))
 
 findings = None
@@ -516,9 +531,11 @@ if findings_path:
         # means in practice.
         payload2 = ask(retry, lambda: write_usage(p_tok, c_tok, served))
         usage2 = payload2.get("usage") or {}
-        p_tok = add_toks(p_tok, toks(usage2, "prompt_tokens"))
-        c_tok = add_toks(c_tok, toks(usage2, "completion_tokens"))
-        text2 = content_of(payload2, lambda: write_usage(p_tok, c_tok, served))
+        _p2, _c2 = toks(usage2, "prompt_tokens"), toks(usage2, "completion_tokens")
+        PARTIAL = toks_partial(p_tok, _p2) or toks_partial(c_tok, _c2)
+        p_tok = add_toks(p_tok, _p2)
+        c_tok = add_toks(c_tok, _c2)
+        text2 = content_of(payload2, lambda: write_usage(p_tok, c_tok, served, PARTIAL))
         findings, why2 = parse_findings(text2)
         if findings is not None:
             # PROVENANCE. On a retried round the prose on stdout is the FIRST reply and the
@@ -533,7 +550,7 @@ if findings_path:
                 "count. This round did NOT establish that the artefact is clean — it must not "
                 "be treated as satisfying the stop condition.\n" % why2)
             sys.stdout.write(text)
-            write_usage(p_tok, c_tok, served)
+            write_usage(p_tok, c_tok, served, PARTIAL)
             sys.exit(4)
 
 sys.stdout.write(text)
@@ -548,4 +565,4 @@ if findings_path and findings is not None:
                         "  (counts came from the RE-PROMPT; the prose above is the first reply, "
                         "so the two can differ)" if findings.get("from_retry") else ""))
 
-write_usage(p_tok, c_tok, served)
+write_usage(p_tok, c_tok, served, PARTIAL)

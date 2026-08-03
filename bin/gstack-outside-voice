@@ -198,8 +198,9 @@ log_usage() {
   else _pt=$(printf '%s' "${5:-0}" | tr -cd '0-9'); [ -n "$_pt" ] || _pt=0; fi
   if [ "${6:-}" = "unknown" ]; then _ct=null
   else _ct=$(printf '%s' "${6:-0}" | tr -cd '0-9'); [ -n "$_ct" ] || _ct=0; fi
-  printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"status":"%s","ts":"%s"}\n' \
-    "$_b" "$_m" "$_p" "$_l" "$_pt" "$_ct" "$_st" "$_ts" \
+  local _pa="false"; [ "${8:-false}" = "true" ] && _pa="true"
+  printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"tokens_partial":%s,"status":"%s","ts":"%s"}\n' \
+    "$_b" "$_m" "$_p" "$_l" "$_pt" "$_ct" "$_pa" "$_st" "$_ts" \
     >> "$_STATE_DIR/analytics/outside-voice.jsonl" 2>/dev/null || true
 }
 
@@ -556,7 +557,7 @@ exec_openrouter() {
   # file, and the round was still billed upstream. Two timed-out rounds on this branch logged
   # `in=0 out=0` for requests OpenRouter had already charged for. 0 there does not mean cheap,
   # it means unmeasured, and this log feeds a cheap-vs-frontier cost comparison.
-  local ptok=unknown ctok=unknown rmodel="$model"
+  local ptok=unknown ctok=unknown rmodel="$model" rpartial=false
   if [ -s "$resp_file" ]; then
     # JSON null (usage absent from the API response) prints as None; map it back to the
     # `unknown` sentinel rather than letting `tr -cd '0-9'` silently flatten it to 0.
@@ -567,14 +568,18 @@ print("unknown" if v is None else v)' "$resp_file" 2>/dev/null || echo unknown)
 v=json.load(open(sys.argv[1])).get("completion_tokens")
 print("unknown" if v is None else v)' "$resp_file" 2>/dev/null || echo unknown)
     rmodel=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("model",""))' "$resp_file" 2>/dev/null || echo "$model")
+    # Carry the partial marker through to the log. Recording it only in a tempfile that is
+    # deleted seconds later is the same failure as printing a caveat to a stderr nobody reads:
+    # the number survives and the reason it might be wrong does not.
+    rpartial=$(python3 -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("tokens_partial") else "false")' "$resp_file" 2>/dev/null || echo false)
   fi
 
   if [ "$rc" -eq 124 ]; then
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout "$rpartial"
   elif [ "$rc" -ne 0 ]; then
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" "error_$rc"
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" "error_$rc" "$rpartial"
   else
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" ok
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" ok "$rpartial"
   fi
 
   rm -f "$resp_file" ${diff_file:+"$diff_file"}
