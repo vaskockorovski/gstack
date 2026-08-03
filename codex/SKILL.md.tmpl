@@ -210,7 +210,7 @@ if [ "$_GATE_MODE" != "ready" ]; then
     not_authed)    echo "GATE NOT RUN — the configured gate backend has no credentials. NOT a clean gate; nothing was reviewed." ;;
     *)             echo "GATE NOT RUN — outside voice is '$_GATE_MODE' for the final_gate phase. NOT a clean gate; nothing was reviewed." ;;
   esac
-  echo "Fall back to the Claude subagent path."
+  echo "NO outside-voice gate ran. This skill defines no Claude fallback for the gate, so step 4 has nothing to derive a verdict from: report the gate as NOT RUN rather than as PASS, and fix the configuration named above before relying on it."
 else
   _GATE_RAN=yes
 fi
@@ -225,6 +225,8 @@ cat > "$_GATE_PROMPT" <<'PROMPT'
 IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. Do NOT modify agents/openai.yaml. Stay focused on repository code only.
 
 Review the changes on this branch against the base branch <base>, and review only those changes. Run git diff origin/<base>...HEAD 2>/dev/null || git diff <base>...HEAD to see them if you have repository access; if you do not, the diff is supplied to you below and that is the whole of what you can see.
+
+Label each finding with a literal marker [P1] (critical), [P2] (advisory) or [P3] (minor), in those brackets, and reference file:line. Step 4 decides PASS/FAIL by looking for [P1] in your output, so a critical finding written without the marker is recorded as a PASS.
 PROMPT
 # 330s (5.5min) is slightly longer than the Bash 300s so the shell wrapper
 # only fires if Bash's own timeout doesn't.
@@ -260,6 +262,13 @@ elif [ "$_CODEX_EXIT" != "0" ]; then
   echo "[codex exit $_CODEX_EXIT] $(head -1 "$TMPERR" 2>/dev/null || echo "no stderr captured")"
   head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
   _gstack_codex_log_event "codex_nonzero_exit" "review:$_CODEX_EXIT"
+elif [ -s "$TMPERR" ]; then
+  # Exit 0 with warnings still qualifies the gate: a diff truncated at the byte cap means the
+  # review did not cover the whole change, and reading stderr only on FAILURE hides exactly
+  # that. The loop path gained this in round 7; the gate kept the defect for twenty rounds,
+  # because nothing looked at the two paths together — which is what a repo-scoped gate is for.
+  echo "[outside-voice notes — the gate SUCCEEDED; these qualify it]"
+  head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
 fi
 fi
 ```
