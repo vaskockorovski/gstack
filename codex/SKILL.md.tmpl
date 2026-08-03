@@ -621,6 +621,12 @@ Two things about this path that are easy to get wrong:
   nothing at all — the adapter refuses with exit 2 rather than send an empty diff,
   because a reviewer given nothing returns no findings and that is indistinguishable
   from a clean round. Raise `GSTACK_OUTSIDE_VOICE_MAX_DIFF_BYTES` if you hit it.
+- **An oversized PROMPT is refused, not truncated** — `GSTACK_OUTSIDE_VOICE_MAX_PROMPT_BYTES`
+  (2 MB). Deliberately the opposite of the diff's handling above: cutting a diff drops
+  material the reviewer might have commented on, and the warning says so. Cutting the
+  prompt drops the *instructions* — including the findings contract that decides how
+  severities are reported — so the round comes back malformed, or worse, plausibly formed
+  against half a spec.
 
 When logging the round, pass the voice you actually used, not the default:
 `codex-round-log.sh --voice <name> --p1 N …`.
