@@ -308,7 +308,10 @@ agents/openai.yaml. Stay focused on repository code only.
 Review the changes on this branch against origin/<base>. Find defects that would
 break in production: edge cases, race conditions, security holes, resource leaks,
 silent failure paths, and data-corruption paths. Be adversarial and specific.
-Label each finding P1 / P2 / P3 and reference file:line. No compliments.
+Label each finding with a literal marker [P1] (critical), [P2] (advisory) or [P3] (minor),
+in those brackets, and reference file:line. On a backend that emits no structured block the
+caller reads these markers directly, so a critical finding written without [P1] is invisible.
+No compliments.
 
 Keep each finding to at most three sentences: what breaks, the concrete trigger, and
 where. No preamble, no summary section, no restating the diff back. Brevity here is not
@@ -322,11 +325,15 @@ _OV_FINDINGS=$(mktemp "$TMP_ROOT/gstack-ov-findings-XXXXXX.json")
 # returns nothing. Saying so in prose is not enough: this skill already learned, over four
 # rounds, that a step written beside a code block instead of inside it does not get run.
 _OV_DONE=$(mktemp "$TMP_ROOT/gstack-ov-done-XXXXXX")
+# The adapter's STDOUT is the review itself on the codex backend, which emits no findings
+# file — so discarding it (this was `> /dev/null`) lost the entire result on the DEFAULT
+# configuration while every other signal still looked healthy.
+_OV_OUT=$(mktemp "$TMP_ROOT/gstack-ov-out-XXXXXX.txt")
 nohup bash -c '~/.claude/skills/gstack/bin/gstack-outside-voice exec \
   --phase loop --prompt-file "'"$_LOOP_PROMPT"'" --repo-root "'"$_REPO_ROOT"'" \
   --base "origin/<base>" --effort medium --timeout 900 \
   --findings-out "'"$_OV_FINDINGS"'" < /dev/null 2>"'"$TMPERR"'"
-echo $? > "'"$_OV_DONE"'"' > /dev/null 2>&1 &
+echo $? > "'"$_OV_DONE"'"' > "$_OV_OUT" 2>&1 &
 # Poll the marker rather than waiting inline, so the host cap never sees a long call.
 for _i in $(seq 1 180); do [ -s "$_OV_DONE" ] && break; sleep 10; done
 if [ -s "$_OV_DONE" ]; then
@@ -337,7 +344,7 @@ else
   # that has not happened, and deleting the findings file would race a writer that is about to
   # produce it. Neither the exit code nor the file is ours to touch yet.
   _OV_EXIT=125
-  echo "ROUND STATE UNKNOWN — the review did not finish within the 30-minute poll and may still be running. This is NOT a clean round and NOT a timeout; nothing has been established. The findings file is left in place for the running call."
+  echo "ROUND STATE UNKNOWN — the review did not finish within the 30-minute poll and may still be running. If neither gtimeout nor timeout is installed the adapter warned that it ran UNCAPPED, in which case the call is not bounded by anything and is now orphaned: find it with 'ps -eo pid,etime,cmd | grep gstack-outside-voice' and kill it by PID before re-running, or it keeps billing. This is NOT a clean round and NOT a timeout; nothing has been established. The findings file is left in place for the running call."
 fi
 rm -f "$_LOOP_PROMPT"
 if [ "$_OV_EXIT" = "124" ]; then
@@ -382,7 +389,8 @@ fi
 if [ "$_OV_EXIT" = "0" ] && [ -s "$_OV_FINDINGS" ]; then
   echo "OV_FINDINGS_JSON: $(cat "$_OV_FINDINGS")"
 elif [ "$_OV_EXIT" = "0" ]; then
-  echo "OV_FINDINGS_JSON: <none — backend was codex; read its own output above for severities>"
+  echo "--- review output ---"; cat "$_OV_OUT"; echo "--- end review output ---"
+  echo "OV_FINDINGS_JSON: <none — backend was codex; read its severities from the review output above>"
 elif [ "$_OV_EXIT" = "125" ]; then
   echo "OV_FINDINGS_JSON: <none yet — the round is still running; the file belongs to that call>"
 else
@@ -390,7 +398,7 @@ else
 fi
 # Not on 125: a still-running call is about to write this file, and deleting it would race
 # the writer and destroy the round's only machine-readable result.
-[ "$_OV_EXIT" = "125" ] || rm -f "$_OV_FINDINGS"
+[ "$_OV_EXIT" = "125" ] || rm -f "$_OV_FINDINGS" "$_OV_OUT"
 ```
 
 **If `$_OV_FINDINGS` does not exist after a successful run, the backend was `codex`** — it owns
@@ -426,7 +434,7 @@ Two things about this path that are easy to get wrong:
   run it detached and poll for completion, rather than inline where the harness kills it
   first. Measured: an inline call was killed at exactly the host cap while the model was
   still generating, which bills the round and returns nothing. Run it as
-  `nohup bash -c '<the call above>; echo $? > /tmp/round.done' &` and wait on the marker.
+  `nohup bash -c '<the call above>; echo $? > /tmp/round.done' > /tmp/round.out 2>&1 &` and wait on the marker. Capture stdout: on the codex backend it IS the review.
 - **A large diff needs wall-clock, not just context.** The loop call above uses 900s
   because 330 is not enough on a real branch: measured on this adapter's own review
   loop, rounds ran 5-15 minutes and a 170KB diff needed 1800s to complete at all. A
@@ -493,8 +501,12 @@ grep "tokens used" "$TMPERR" 2>/dev/null || echo "tokens: unknown"
    response reporting `p1: 2` in JSON while writing "P1:" or "Critical" in prose reads as
    a PASS. Producer and consumer must agree, and the block is the producer's contract.
 
-   Only when NO block was printed — the codex backend ran, and owns its own output format —
-   fall back to the markers:
+   **Exit 4 is never graded at all.** A hosted backend that could not produce a valid block
+   still prints its first reply to stdout and exits 4, so "no block" does NOT imply "codex
+   ran". If the adapter exited 4, the gate is NOT RUN — report it as such and grade nothing.
+
+   Only when NO block was printed AND the exit was 0 — the codex backend ran, and owns its
+   own output format — fall back to the markers:
    If the output contains `[P1]` — the gate is **FAIL**.
    If no `[P1]` markers are found (only `[P2]` or no findings) — the gate is **PASS**.
 
@@ -546,7 +558,8 @@ CROSS-MODEL ANALYSIS:
 ```
 
 Substitute: TIMESTAMP (ISO 8601), STATUS ("clean" if PASS, "issues_found" if FAIL),
-GATE ("pass" or "fail"), findings (count of [P1] + [P2] markers),
+GATE ("pass" or "fail"), findings (from GATE_FINDINGS_JSON's p1+p2 when a block was
+printed, else the count of [P1] + [P2] markers),
 findings_fixed (count of findings that were addressed/fixed before shipping).
 
 8. Clean up temp files:
