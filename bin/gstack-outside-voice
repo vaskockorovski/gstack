@@ -434,6 +434,17 @@ cmd_exec() {
     disabled) echo "OUTSIDE_VOICE_DISABLED phase=$phase" >&2; return 3 ;;
   esac
 
+  # Readiness BEFORE the sweep gate. preflight_gate refuses round 1 until a structural sweep is
+  # recorded — correct, and useless as a first message when the real problem is that codex is
+  # not installed or $OPENROUTER_API_KEY is unset: the operator is sent to do a repo-wide
+  # consistency sweep to fix an install error. Same ordering mistake as the disabled/misconfigured
+  # cases in round 21, one class further along: ask "can this run at all" before "is it allowed to".
+  _readiness="$(probe "$phase")"
+  case "$_readiness" in
+    not_installed) die "the $backend backend's client is not installed. For codex: npm install -g @openai/codex. For openrouter: install python3." ;;
+    not_authed)    die "the $backend backend has no credentials. For codex: codex login, or set \$CODEX_API_KEY. For openrouter: set \$OPENROUTER_API_KEY." ;;
+  esac
+
   preflight_gate "$phase" "$repo_root"
 
   case "$backend" in

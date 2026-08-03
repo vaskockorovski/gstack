@@ -1195,10 +1195,19 @@ fi
 # reads as "no findings" — the nothing-wrong/nothing-looked-at equivalence this whole contract
 # exists to break — and made the else branch below unreachable. Gate on the exit code too:
 # a non-zero round established nothing, whatever is on disk.
+# Printed ONCE, outside the branch, so no branch can omit it. The previous shape printed the
+# review only on the codex path — so an openrouter round reported "P1=2, P2=3" and deleted the
+# file:line findings the user needs to act on. That was this same defect (round 4: stdout to
+# /dev/null) surviving in the sibling branch of the fix for it, which is why this is structural
+# rather than another per-branch cat: a round's output is worth printing whatever its exit code,
+# and a failed round's partial output is often the only diagnostic there is.
+if [ -s "$_OV_OUT" ]; then
+  echo "--- review output ---"; cat "$_OV_OUT"; echo "--- end review output ---"
+fi
 if [ "$_OV_EXIT" = "0" ] && [ -s "$_OV_FINDINGS" ]; then
   echo "OV_FINDINGS_JSON: $(cat "$_OV_FINDINGS")"
+  echo "Severity counts come from this block; the file:line detail is in the review output above."
 elif [ "$_OV_EXIT" = "0" ]; then
-  echo "--- review output ---"; cat "$_OV_OUT"; echo "--- end review output ---"
   echo "OV_FINDINGS_JSON: <none — backend was codex; read its severities from the review output above>"
 elif [ "$_OV_EXIT" = "125" ]; then
   echo "OV_FINDINGS_JSON: <none yet — the round is still running; the file belongs to that call>"
