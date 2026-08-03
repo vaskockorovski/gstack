@@ -1288,7 +1288,17 @@ _PROMPT_FILE=$(mktemp "$TMP_ROOT/codex-prompt-XXXXXX.txt")
   git diff "<base>...HEAD" 2>/dev/null
   printf '\nDIFF_END\n'
 } > "$_PROMPT_FILE"
-_gstack_codex_timeout_wrapper 330 codex exec -s read-only "$(cat "$_PROMPT_FILE")" -c 'model_reasoning_effort="high"' < /dev/null 2>"$TMPERR"
+# Routed through the adapter like the other two paths. Any words after `/codex review` take
+# this branch, so it is easy to reach in normal use — and while it did honour the master
+# `codex_reviews` switch via the probe above, it ignored `outside_voice_gate` entirely. A user
+# who had pointed the gate at another backend, or switched it off, kept getting Codex here and
+# had no way to tell. --codex-mode exec keeps this path's semantics (a custom prompt, not
+# Codex's own review scaffolding) and additionally passes the prompt on stdin rather than argv,
+# which removes the ARG_MAX hazard of inlining a diff into a command line.
+~/.claude/skills/gstack/bin/gstack-outside-voice exec \
+  --phase final_gate --codex-mode exec \
+  --prompt-file "$_PROMPT_FILE" --repo-root "$_REPO_ROOT" \
+  --effort high --timeout 330 < /dev/null 2>"$TMPERR"
 _CODEX_EXIT=$?
 rm -f "$_PROMPT_FILE"
 if [ "$_CODEX_EXIT" = "124" ]; then

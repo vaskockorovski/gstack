@@ -304,7 +304,16 @@ case "${1:-}" in
     # past the misconfiguration guard those keys exist to provide. Scoped to the two backend
     # keys: they are the ones where guessing costs money.
     if [ -z "$VALUE" ] && grep -qE "^${KEY}:[[:space:]]*$" "$CONFIG_FILE" 2>/dev/null; then
-      case "$KEY" in outside_voice_loop|outside_voice_gate) printf '%s' "__blank__"; exit 0 ;; esac
+      case "$KEY" in outside_voice_loop|outside_voice_gate|outside_voice_loop_model) printf '%s' "__blank__"; exit 0 ;; esac
+    fi
+    # `set` rejects a model id containing whitespace because `get` reads with awk '{print $2}'
+    # and would return only the first field. A HAND-EDITED line skips the setter entirely, so
+    # the same value arrives here truncated and silently bills a model nobody chose. Refuse it
+    # on the read side too: setter-only validation protects the path the config header tells
+    # users not to take ("edit freely").
+    if [ "$KEY" = "outside_voice_loop_model" ] \
+       && grep -qE "^${KEY}:[[:space:]]*[^[:space:]]+[[:space:]]+[^[:space:]]" "$CONFIG_FILE" 2>/dev/null; then
+      printf '%s' "__blank__"; exit 0
     fi
     if [ -z "$VALUE" ]; then
       VALUE=$(lookup_default "$KEY")

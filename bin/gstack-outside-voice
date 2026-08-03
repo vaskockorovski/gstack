@@ -5,8 +5,8 @@
 # run on a cheap model while the final gate stays on a frontier one.
 #
 # SCOPE — what is wired today, stated so no reader has to trust a plan as a fact.
-# `/codex` is the ONLY skill routed through this adapter (both its loop path and its
-# final gate). Thirteen other skills — autoplan, design-consultation, design-review,
+# `/codex` is the ONLY skill routed through this adapter — all three of its review paths:
+# the loop, the default final gate, and the custom-focus `/codex review <focus>` branch. Thirteen other skills — autoplan, design-consultation, design-review,
 # document-release, office-hours, plan-{ceo,design,devex,eng}-review, review, ship
 # (adversarial + review-army), spec — still call `codex exec` directly and are
 # unaffected by outside_voice_* config. Migrating them is the intent of gstack #619
@@ -554,6 +554,13 @@ exec_openrouter() {
   # missing or broken, since _cfg already falls back to that table. It is a third copy of one
   # fact (config header prose, lookup_default, here), so changing the default means changing
   # all three; grep the model id before assuming one edit is enough.
+  # __blank__ means the config LINE exists and its value is unusable — blank, or carrying
+  # whitespace that `get` would truncate. Falling back to the default there bills a model the
+  # user did not choose while their config plainly names one, which is the same silent
+  # misbilling the setter validation exists to prevent, reached through a hand-edited file.
+  if [ "$model" = "__blank__" ]; then
+    die "outside_voice_loop_model is set to an unusable value (blank, or containing whitespace). Fix ~/.gstack/config.yaml, or run: gstack-config set outside_voice_loop_model <model-id>"
+  fi
   [ -n "$model" ] || model="minimax/minimax-m3"
 
   # Tool-less backend: inline the diff, or it reviews nothing at all.
