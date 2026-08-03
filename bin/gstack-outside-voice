@@ -330,6 +330,15 @@ cmd_exec() {
   # the moment the gate started routing through here.
   case "$effort" in low|medium|high|xhigh) ;; *) die "--effort must be low|medium|high|xhigh" ;; esac
   case "$repo_context" in diff|none) ;; *) die "--repo-context must be diff|none" ;; esac
+  # --timeout goes straight to `timeout N`, where GNU treats 0 as NO LIMIT. So `--timeout 0`
+  # silently removed the wall-clock cap rather than setting a tight one — and the cap is what
+  # stops a stalled request holding the process open indefinitely while the round is already
+  # billed. A non-numeric value fails later, inside timeout, with a message about timeout's
+  # own usage rather than about this flag. Both refused here instead.
+  case "$timeout_s" in
+    ''|*[!0-9]*) die "--timeout must be a positive whole number of seconds (got '$timeout_s')" ;;
+  esac
+  [ "$timeout_s" -gt 0 ] || die "--timeout must be greater than 0 — 'timeout 0' means NO limit, which is the opposite of what a cap is for."
   case "$codex_mode" in review|exec) ;; *) die "--codex-mode must be review|exec" ;; esac
   [ -n "$label" ] || label="$phase"
 

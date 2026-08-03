@@ -134,6 +134,18 @@ A missing or malformed block is treated as a FAILED review, not as a clean one.
 if findings_path:
     prompt = prompt + FINDINGS_CONTRACT_TMPL.replace("%FENCE%", FENCE)
 
+# The shell's readiness check strips whitespace before testing for emptiness, so a key with
+# INTERNAL whitespace passes as "ready" — and this side then builds "Bearer abc def" from the
+# raw value. A space yields a header the API rejects for reasons that name nothing useful; a
+# newline is worse, since a header value carrying one is an injection attempt as far as
+# http.client is concerned and it raises rather than sends. Refuse it here, by name, and never
+# echo the value.
+_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+if _KEY != _KEY.strip() or any(c.isspace() for c in _KEY):
+    sys.stderr.write("$OPENROUTER_API_KEY contains whitespace, which cannot appear in an "
+                     "Authorization header. Re-copy the key without spaces or line breaks.\n")
+    sys.exit(1)
+
 base_url = os.environ.get("GSTACK_OUTSIDE_VOICE_BASE_URL") or "https://openrouter.ai/api/v1"
 
 # The Authorization header rides on this request. A plain-http override would put the API key
@@ -192,7 +204,7 @@ def ask(message, on_fail=None):
         base_url.rstrip("/") + "/chat/completions",
         data=body,
         headers={
-            "Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"],
+            "Authorization": "Bearer " + _KEY,
             "Content-Type": "application/json",
             "X-Title": "gstack-outside-voice",
         },
