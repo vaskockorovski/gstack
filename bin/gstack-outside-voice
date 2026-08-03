@@ -85,7 +85,12 @@ if [ -z "$_PY" ] && command -v python >/dev/null 2>&1; then
   python -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' >/dev/null 2>&1 \
     && _PY="$(command -v python)"
 fi
-_STATE_DIR="${GSTACK_STATE_ROOT:-${GSTACK_HOME:-${GSTACK_STATE_DIR:-$HOME/.gstack}}}"
+# `${HOME:-}`, not `$HOME`: under `set -u` a bare expansion ABORTS the script when HOME is
+# unset, and a HOME-less container is a case this adapter explicitly supports (see TMP_ROOT
+# below). Reported for the two sites further down; this one was NOT reported and is the
+# earliest of the three — it runs before anything else and is safe today only because the
+# plugin path happens to set GSTACK_STATE_ROOT. Unset all three and it dies at line one.
+_STATE_DIR="${GSTACK_STATE_ROOT:-${GSTACK_HOME:-${GSTACK_STATE_DIR:-${HOME:-}/.gstack}}}"
 # Scratch files honour the caller's resolved temp root. Step 0.6 moved the skill to
 # gstack-paths precisely so temp files work where /tmp is read-only or absent, and this
 # adapter then wrote its diff and response files under ${TMPDIR:-/tmp} anyway — so every
@@ -191,7 +196,11 @@ probe() {
     local _k1 _k2
     _k1=$(printf '%s' "${CODEX_API_KEY:-}" | tr -d '[:space:]')
     _k2=$(printf '%s' "${OPENAI_API_KEY:-}" | tr -d '[:space:]')
-    if [ -n "$_k1" ] || [ -n "$_k2" ] || [ -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ]; then
+    # `${HOME:-}` — with HOME and CODEX_HOME both unset, `$HOME` aborted probe with "HOME:
+    # unbound variable" BEFORE it could emit ready/not_authed, so every codex-backed review
+    # failed in a HOME-less install rather than falling back. Resolving to "/.codex/auth.json"
+    # simply does not exist, which is the honest answer: not_authed.
+    if [ -n "$_k1" ] || [ -n "$_k2" ] || [ -f "${CODEX_HOME:-${HOME:-}/.codex}/auth.json" ]; then
       echo "ready"; return 0
     fi
     echo "not_authed"; return 0
@@ -349,8 +358,8 @@ preflight_gate() {
   # binary and must be unaffected, since this adapter is headed for a third-party PR and cannot
   # hard-depend on a claude-fleet-config script.
   for _c in ${GSTACK_ROUND_LEDGER:+"$GSTACK_ROUND_LEDGER"} \
-            "$HOME/Development/cfc-live/claude/bin/codex-round-log.sh" \
-            "$HOME/Development/claude-fleet-config/claude/bin/codex-round-log.sh"; do
+            "${HOME:-}/Development/cfc-live/claude/bin/codex-round-log.sh" \
+            "${HOME:-}/Development/claude-fleet-config/claude/bin/codex-round-log.sh"; do
     [ -x "$_c" ] && { _rl="$_c"; break; }
   done
   [ -n "$_rl" ] || return 0

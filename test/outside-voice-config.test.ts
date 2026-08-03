@@ -513,6 +513,42 @@ describe('the hosted backend finds Python under either name, but only Python 3',
   });
 });
 
+// `set -u` turns a bare `$HOME` into an ABORT when HOME is unset, and a HOME-less container is a
+// case this adapter explicitly supports (it resolves TMP_ROOT via gstack-paths for exactly that
+// reason). Three sites expanded it bare; probe died with "HOME: unbound variable" before it could
+// emit any readiness word, so every review failed instead of falling back.
+describe('the adapter survives a HOME-less environment', () => {
+  function probeHomeless(extra: Record<string, string>): { out: string; status: number } {
+    const r = spawnSync('bash', [ADAPTER, 'probe', '--phase', 'loop'], {
+      // No HOME, no CODEX_HOME, and none of the state-root overrides unless a case adds them.
+      env: { PATH: process.env.PATH, ...extra } as Record<string, string>,
+      encoding: 'utf-8',
+    });
+    return { out: (r.stdout || '').trim(), status: r.status ?? -1 };
+  }
+
+  test('probe emits a readiness word instead of aborting when HOME is unset', () => {
+    const r = probeHomeless({});
+    expect(r.status).toBe(0);
+    expect(['ready', 'not_authed', 'not_installed', 'misconfigured', 'disabled']).toContain(r.out);
+  });
+
+  test('no bare $HOME expansion remains outside comments', () => {
+    const lines = fs.readFileSync(ADAPTER, 'utf-8').split('\n')
+      .filter(l => !l.trim().startsWith('#'))
+      .filter(l => /\$HOME\b/.test(l) && !/\$\{HOME:-\}/.test(l));
+    expect(lines).toEqual([]);
+  });
+
+  // The site the review did NOT report: _STATE_DIR runs before everything else and is safe today
+  // only because the plugin path happens to set GSTACK_STATE_ROOT. With every override unset it
+  // was the earliest abort of the three.
+  test('the state dir resolves with every override and HOME unset', () => {
+    const r = probeHomeless({});
+    expect(r.status).toBe(0);
+  });
+});
+
 describe('the retry prompt cannot feed a live fence back to the model', () => {
   const REQUEST = path.join(ROOT, 'bin', 'gstack-outside-voice-request.py');
 
