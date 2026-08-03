@@ -297,6 +297,15 @@ case "${1:-}" in
       exit 1
     fi
     # Use literal match for keys containing @ (endpoint ids), regex otherwise
+    # A config file that EXISTS but cannot be read is not an unconfigured install. Both left
+    # VALUE empty and fell through to lookup_default, so a permissions problem or a bad mount
+    # silently resolved every key to its default — and the adapter's _cfg_strict, which was
+    # written to refuse exactly that, relies on a non-zero exit it never got. Probed rather
+    # than assumed: `get` on a chmod-000 config returned 0 and the default.
+    if [ -e "$CONFIG_FILE" ] && [ ! -r "$CONFIG_FILE" ]; then
+      echo "Error: $CONFIG_FILE exists but is not readable" >&2
+      exit 1
+    fi
     VALUE=$(grep -F "${KEY}:" "$CONFIG_FILE" 2>/dev/null | grep -E "^${KEY%@*}(@[a-zA-Z0-9]+)?:" | grep -F "${KEY}:" | tail -1 | awk '{print $2}' | tr -d '[:space:]' || true)
     # A key written with NO value is not the same fact as a key never written. Both leave
     # VALUE empty, and lookup_default below turns both into "codex" — so a hand-edited

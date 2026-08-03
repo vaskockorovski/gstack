@@ -42,11 +42,31 @@ assumptions, catches things you might miss. Present its output faithfully, not s
 ## Step 0.4: Check codex binary
 
 ```bash
+# Does this invocation need Codex at all? Both of the next two checks — binary and auth —
+# predate the outside-voice adapter and stop unconditionally, which made the whole feature
+# unreachable on a machine configured for a hosted backend and holding no Codex.
+#
+# Scoped deliberately to REVIEW mode. `/codex challenge` and `/codex <prompt>` (Steps 2B/2C)
+# call `codex exec` directly and are not routed through the adapter, so bypassing their gating
+# would only move the failure later, to the actual Codex call, without the auth instructions.
+# An earlier version of this bypass covered the auth check but not the binary check below it,
+# so it never fired; and it ignored the other modes, so it fired where it should not have.
+_NEEDS_CODEX=yes
+if [ "<mode>" = "review" ]; then
+  _NEEDS_CODEX=no
+  for _ph in loop final_gate; do
+    [ "$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase $_ph 2>/dev/null)" = "codex" ] && _NEEDS_CODEX=yes
+  done
+fi
+echo "NEEDS_CODEX: $_NEEDS_CODEX"
 CODEX_BIN=$(command -v codex || echo "")
 [ -z "$CODEX_BIN" ] && echo "NOT_FOUND" || echo "FOUND: $CODEX_BIN"
 ```
 
-If `NOT_FOUND`: stop and tell the user:
+If `NEEDS_CODEX: no`, skip this step AND Step 0.5 entirely — no phase of this review routes
+to Codex, so neither its absence nor its auth is a blocker. Note it and continue.
+
+Otherwise, if `NOT_FOUND`: stop and tell the user:
 "Codex CLI not found. Install it: `npm install -g @openai/codex` or see https://github.com/openai/codex"
 
 If `NOT_FOUND`, also log the event:
@@ -74,23 +94,8 @@ fi
 _gstack_codex_version_check   # warns if known-bad, non-blocking
 ```
 
-If the output contains `AUTH_FAILED`, **first check whether Codex is actually needed.**
-This preflight predates the outside-voice adapter and stops on missing Codex auth
-unconditionally, which makes the whole feature unreachable on a machine configured for a
-hosted backend — `/codex review --loop` with `outside_voice_loop=openrouter`, and a gate
-with `outside_voice_gate=openrouter`, both need no Codex at all and were refused up front
-anyway:
-
-```bash
-_NEEDS_CODEX=no
-for _ph in loop final_gate; do
-  [ "$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase $_ph 2>/dev/null)" = "codex" ] && _NEEDS_CODEX=yes
-done
-echo "NEEDS_CODEX: $_NEEDS_CODEX"
-```
-
-If `NEEDS_CODEX: no`, do NOT stop — no phase routes to Codex, so its absence is not a
-blocker. Note it and continue. Only when a phase does route to Codex, stop and tell the user:
+This whole step is skipped when Step 0.4 reported `NEEDS_CODEX: no`. Otherwise, if the
+output contains `AUTH_FAILED`, stop and tell the user:
 "No Codex authentication found. Run `codex login` or set `$CODEX_API_KEY` / `$OPENAI_API_KEY`, then re-run this skill."
 
 If the version check printed a `WARN:` line, pass it through to the user verbatim
@@ -337,7 +342,7 @@ cosmetic — a reasoning model's OUTPUT budget is the binding constraint on a la
 and a review that exhausts it emits nothing at all and still bills in full. Spend the
 budget on finding defects, not on describing them at length.
 PROMPT
-_OV_FINDINGS="$TMP_ROOT/gstack-ov-findings.json"
+_OV_FINDINGS="$TMP_ROOT/gstack-ov-findings-$_OV_LANE.json"
 # BACKGROUNDED, not inline. 900s exceeds the host shell's own cap, so an inline call is
 # killed by the harness while the model is still generating — which bills the round and
 # returns nothing. Saying so in prose is not enough: this skill already learned, over four
@@ -345,12 +350,19 @@ _OV_FINDINGS="$TMP_ROOT/gstack-ov-findings.json"
 # Stable paths, not mktemp: re-running this block must poll the EXISTING child. A fresh
 # mktemp each time would start a second paid review and orphan the first — and the message
 # below tells the caller to re-run, so the two have to agree.
-_OV_DONE="$TMP_ROOT/gstack-ov-done"
-_OV_LAUNCHED="$TMP_ROOT/gstack-ov-launched"
+# Namespaced per repo+branch. TMP_ROOT is SHARED — gstack-paths resolves it to $TMPDIR or
+# .gstack/tmp — so fixed names meant a second `/codex review --loop` in another terminal,
+# branch or repo would poll the first run's marker, delete its findings, and report another
+# branch's review as this one's. Stable across re-runs of the SAME lane (which the re-runnable
+# poll needs) and distinct across different ones, which is exactly the round ledger's lane key
+# idea applied to tempfiles.
+_OV_LANE=$(printf '%s|%s' "$(git rev-parse --show-toplevel 2>/dev/null)" "$(git branch --show-current 2>/dev/null)" | cksum | tr -d ' \t' )
+_OV_DONE="$TMP_ROOT/gstack-ov-done-$_OV_LANE"
+_OV_LAUNCHED="$TMP_ROOT/gstack-ov-launched-$_OV_LANE"
 # The adapter's STDOUT is the review itself on the codex backend, which emits no findings
 # file — so discarding it (this was `> /dev/null`) lost the entire result on the DEFAULT
 # configuration while every other signal still looked healthy.
-_OV_OUT="$TMP_ROOT/gstack-ov-out.txt"
+_OV_OUT="$TMP_ROOT/gstack-ov-out-$_OV_LANE.txt"
 if [ ! -f "$_OV_LAUNCHED" ]; then
 touch "$_OV_LAUNCHED"
 nohup bash -c '~/.claude/skills/gstack/bin/gstack-outside-voice exec \
