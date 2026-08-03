@@ -74,7 +74,23 @@ fi
 _gstack_codex_version_check   # warns if known-bad, non-blocking
 ```
 
-If the output contains `AUTH_FAILED`, stop and tell the user:
+If the output contains `AUTH_FAILED`, **first check whether Codex is actually needed.**
+This preflight predates the outside-voice adapter and stops on missing Codex auth
+unconditionally, which makes the whole feature unreachable on a machine configured for a
+hosted backend — `/codex review --loop` with `outside_voice_loop=openrouter`, and a gate
+with `outside_voice_gate=openrouter`, both need no Codex at all and were refused up front
+anyway:
+
+```bash
+_NEEDS_CODEX=no
+for _ph in loop final_gate; do
+  [ "$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase $_ph 2>/dev/null)" = "codex" ] && _NEEDS_CODEX=yes
+done
+echo "NEEDS_CODEX: $_NEEDS_CODEX"
+```
+
+If `NEEDS_CODEX: no`, do NOT stop — no phase routes to Codex, so its absence is not a
+blocker. Note it and continue. Only when a phase does route to Codex, stop and tell the user:
 "No Codex authentication found. Run `codex login` or set `$CODEX_API_KEY` / `$OPENAI_API_KEY`, then re-run this skill."
 
 If the version check printed a `WARN:` line, pass it through to the user verbatim
@@ -205,7 +221,7 @@ if [ "$_GATE_MODE" != "ready" ]; then
   # invocation below checks, and say which key to fix rather than only which state was seen.
   _GATE_KEY=outside_voice_gate
   case "$_GATE_MODE" in
-    misconfigured) echo "GATE NOT RUN — \`$_GATE_KEY\` holds an unrecognised value. Fix it: gstack-config set $_GATE_KEY <codex|openrouter|disabled>. NOT a clean gate; nothing was reviewed." ;;
+    misconfigured) echo "GATE NOT RUN — the outside-voice configuration is unusable. TWO keys produce this state: \`$_GATE_KEY\` holding an unrecognised value, or \`outside_voice_loop_model\` blank or carrying whitespace. Run \`gstack-outside-voice backend --phase final_gate\` for the precise message — it names the key. NOT a clean gate; nothing was reviewed." ;;
     disabled)      echo "GATE NOT RUN — outside-voice review is off for this phase. Two switches produce it: \`codex_reviews\` and \`$_GATE_KEY\`. NOT a clean gate; nothing was reviewed." ;;
     not_authed)    echo "GATE NOT RUN — the configured gate backend has no credentials. NOT a clean gate; nothing was reviewed." ;;
     *)             echo "GATE NOT RUN — outside voice is '$_GATE_MODE' for the final_gate phase. NOT a clean gate; nothing was reviewed." ;;
