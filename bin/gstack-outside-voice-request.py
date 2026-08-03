@@ -44,8 +44,29 @@ import urllib.request
 NONCE = secrets.token_hex(4)
 FENCE = "findings-json-" + NONCE
 
-model = os.environ["OR_MODEL"]
-prompt = open(os.environ["OR_PROMPT_FILE"], encoding="utf-8", errors="replace").read()
+def required_env(name):
+    """Fetch a required input, or fail with the NAME rather than a KeyError traceback.
+
+    The shell wrapper always sets these, so via the adapter this cannot fire — which is
+    exactly why it was worth doing: the file is also run directly, by tests and by anyone
+    debugging a round, and there a bare KeyError names a Python dict lookup instead of the
+    contract that was not met. Exit 2 (refused input), matching the shell's own convention.
+    """
+    value = os.environ.get(name)
+    if value is None or value == "":
+        sys.stderr.write("missing required input %s — this program is driven by "
+                         "gstack-outside-voice, which sets it.\n" % name)
+        sys.exit(2)
+    return value
+
+
+model = required_env("OR_MODEL")
+_prompt_path = required_env("OR_PROMPT_FILE")
+try:
+    prompt = open(_prompt_path, encoding="utf-8", errors="replace").read()
+except OSError as e:
+    sys.stderr.write("cannot read the prompt file %r: %s\n" % (_prompt_path, e))
+    sys.exit(2)
 diff_path = os.environ.get("OR_DIFF_FILE") or ""
 truncated = os.environ.get("OR_TRUNCATED") == "yes"
 # Newline-delimited, not space-joined: a pathspec may legitimately contain spaces, and joining
@@ -260,7 +281,13 @@ def ask(message, on_fail=None):
         # A per-socket timeout, not just the shell wrapper. Without it a server that completes
         # the handshake and then stalls holds the read open until the outer timeout kills the
         # process group — by which point the request is billed and nothing is returned.
-        sock_timeout = max(30, int(os.environ.get("OR_TIMEOUT", "330")) - 30)
+        # A non-numeric OR_TIMEOUT raised ValueError here, mid-request-setup, as a traceback.
+        # The shell validates --timeout so the adapter cannot produce one; a direct caller can.
+        try:
+            _outer = int(os.environ.get("OR_TIMEOUT", "330"))
+        except (TypeError, ValueError):
+            _outer = 330
+        sock_timeout = max(30, _outer - 30)
         with _OPENER.open(req, timeout=sock_timeout) as r:
             raw = r.read()
         try:
@@ -610,8 +637,18 @@ if not text.endswith("\n"):
     sys.stdout.write("\n")
 
 if findings_path and findings is not None:
-    with open(findings_path, "w") as fh:
-        json.dump(findings, fh)
+    try:
+        with open(findings_path, "w") as fh:
+            json.dump(findings, fh)
+    except OSError as e:
+        # The prose is already on stdout at this point, so a silent failure here leaves the
+        # caller holding a review with no counts and no file — which its own contract reads as
+        # "the backend was codex". Say what happened and exit non-zero so it is not read as a
+        # clean round.
+        sys.stderr.write("review completed but the findings file %r could not be written: %s. "
+                         "This round did NOT establish a severity count.\n" % (findings_path, e))
+        write_usage(p_tok, c_tok, served, PARTIAL, r_tok)
+        sys.exit(4)
     sys.stderr.write("findings: P1=%d P2=%d P3=%d%s\n"
                      % (findings["p1"], findings["p2"], findings["p3"],
                         "  (counts came from the RE-PROMPT; the prose above is the first reply, "
