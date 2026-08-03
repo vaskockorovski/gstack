@@ -1002,6 +1002,14 @@ is a one-line config fix, and guessing one either bills the frontier price for e
 loop round or quietly weakens the gate.
 
 ```bash
+# Only `ready` proceeds. Without this the probe above is decorative: the adapter runs
+# regardless, the call fails, and the failure is reported as a codex error rather than as the
+# configuration problem the probe already identified. The loop path guards at runtime; this one
+# relied on the reader doing it, and two review rounds reported it as a defect for that reason.
+if [ "$_GATE_MODE" != "ready" ]; then
+  echo "GATE NOT RUN — outside voice is '$_GATE_MODE' for the final_gate phase. This is NOT a clean gate; nothing was reviewed. Fall back to the Claude subagent path."
+  return 0 2>/dev/null || exit 0
+fi
 _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
 _GATE_PROMPT=$(mktemp "$TMP_ROOT/gstack-gate-prompt-XXXXXX.txt")
 cat > "$_GATE_PROMPT" <<'PROMPT'
@@ -1021,6 +1029,14 @@ if [ "$_CODEX_EXIT" = "124" ]; then
   _gstack_codex_log_event "codex_timeout" "330"
   _gstack_codex_log_hang "review" "$(wc -c < "$TMPERR" 2>/dev/null || echo 0)"
   echo "Codex stalled past 5.5 minutes. Common causes: model API stall, long prompt, network issue. Try re-running. If persistent, split the prompt or check ~/.codex/logs/."
+elif [ "$_CODEX_EXIT" = "2" ] || [ "$_CODEX_EXIT" = "3" ] || [ "$_CODEX_EXIT" = "5" ]; then
+  # The ADAPTER's own exit codes, not codex's: 2 refused input (unrecognised backend,
+  # unreadable config, bad base ref), 3 outside-voice disabled for this phase, 5 no pre-flight
+  # sweep recorded. Reporting these as "[codex exit N]" sends the reader to codex's logs for a
+  # configuration problem the adapter already named on stderr. NONE of them is a clean gate.
+  echo "GATE NOT RUN (adapter exit $_CODEX_EXIT) — NOT a clean gate; nothing was reviewed."
+  head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
+  _gstack_codex_log_event "outside_voice_refused" "gate:$_CODEX_EXIT"
 elif [ "$_CODEX_EXIT" != "0" ]; then
   # Surface non-zero exits (parse errors, arg-shape breaks, etc.) so the
   # calling agent doesn't read "no output" as a silent model/API stall and
@@ -1068,7 +1084,10 @@ _OV_FINDINGS=$(mktemp "$TMP_ROOT/gstack-ov-findings-XXXXXX.json")
 _OV_EXIT=$?
 rm -f "$_LOOP_PROMPT"
 if [ "$_OV_EXIT" = "124" ]; then
-  _gstack_codex_log_event "codex_timeout" "900"
+  # Named for the BACKEND that actually timed out. `codex_timeout` on an openrouter round is
+  # a wrong row in gstack's own analytics, and a wrong row is worse than a missing one because
+  # nothing distinguishes it from a right one at read time.
+  _gstack_codex_log_event "outside_voice_timeout" "loop:${_OV_BACKEND:-unknown}:900"
 elif [ "$_OV_EXIT" = "4" ]; then
   # The reviewer ran but its severity block could not be parsed. This is NOT a clean round.
   echo "ROUND INVALID — findings block unusable. Do NOT count this as satisfying the stop condition; re-run the round."
@@ -1139,6 +1158,14 @@ Two things about this path that are easy to get wrong:
   **diff-scoped** while the frontier gate is **repo-scoped**, and a defect only
   visible in an untouched file is exactly what the gate is still there to catch.
   Do not read a clean loop round as a clean gate round.
+- **900s exceeds the host shell's own cap, so this call MUST be backgrounded.** The gate
+  path a few sections up picks 330s deliberately, to sit just above a 300s host timeout
+  so the inner wrapper is the one that fires. The loop cannot honour that invariant —
+  it genuinely needs 5-15 minutes on a real branch — so it breaks the other way instead:
+  run it detached and poll for completion, rather than inline where the harness kills it
+  first. Measured: an inline call was killed at exactly the host cap while the model was
+  still generating, which bills the round and returns nothing. Run it as
+  `nohup bash -c '<the call above>; echo $? > /tmp/round.done' &` and wait on the marker.
 - **A large diff needs wall-clock, not just context.** The loop call above uses 900s
   because 330 is not enough on a real branch: measured on this adapter's own review
   loop, rounds ran 5-15 minutes and a 170KB diff needed 1800s to complete at all. A
