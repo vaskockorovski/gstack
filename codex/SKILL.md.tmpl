@@ -51,12 +51,15 @@ assumptions, catches things you might miss. Present its output faithfully, not s
 # would only move the failure later, to the actual Codex call, without the auth instructions.
 # An earlier version of this bypass covered the auth check but not the binary check below it,
 # so it never fired; and it ignored the other modes, so it fired where it should not have.
+# ONE phase per invocation, so check the one this invocation will use. Checking both meant
+# the common split — cheap loop, frontier gate — blocked `/codex review --loop` on a machine
+# with no Codex, even though that round runs entirely through the hosted backend. Too coarse
+# in the other direction too: the default gate path was blocked by a hosted LOOP setting.
+# `<phase>` is `loop` when the user passed --loop, `final_gate` otherwise.
 _NEEDS_CODEX=yes
 if [ "<mode>" = "review" ]; then
-  _NEEDS_CODEX=no
-  for _ph in loop final_gate; do
-    [ "$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase $_ph 2>/dev/null)" = "codex" ] && _NEEDS_CODEX=yes
-  done
+  [ "$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase <phase> 2>/dev/null)" = "codex" ] \
+    && _NEEDS_CODEX=yes || _NEEDS_CODEX=no
 fi
 echo "NEEDS_CODEX: $_NEEDS_CODEX"
 CODEX_BIN=$(command -v codex || echo "")
@@ -342,6 +345,12 @@ cosmetic — a reasoning model's OUTPUT budget is the binding constraint on a la
 and a review that exhausts it emits nothing at all and still bills in full. Spend the
 budget on finding defects, not on describing them at length.
 PROMPT
+# Lane derived HERE, before the first thing that interpolates it. It was assigned fourteen
+# lines below its first use, so this path expanded to `gstack-ov-findings-.json` on every run
+# and the namespacing added to stop cross-branch collisions did nothing for the one file that
+# carries the findings. Shell has no undefined-variable error to catch this — with `set -u`
+# unset it would have; interpolated empty, it just quietly shares a path.
+_OV_LANE=$(printf '%s|%s' "$(git rev-parse --show-toplevel 2>/dev/null)" "$(git branch --show-current 2>/dev/null)" | cksum | tr -d ' \t' )
 _OV_FINDINGS="$TMP_ROOT/gstack-ov-findings-$_OV_LANE.json"
 # BACKGROUNDED, not inline. 900s exceeds the host shell's own cap, so an inline call is
 # killed by the harness while the model is still generating — which bills the round and
@@ -356,7 +365,6 @@ _OV_FINDINGS="$TMP_ROOT/gstack-ov-findings-$_OV_LANE.json"
 # branch's review as this one's. Stable across re-runs of the SAME lane (which the re-runnable
 # poll needs) and distinct across different ones, which is exactly the round ledger's lane key
 # idea applied to tempfiles.
-_OV_LANE=$(printf '%s|%s' "$(git rev-parse --show-toplevel 2>/dev/null)" "$(git branch --show-current 2>/dev/null)" | cksum | tr -d ' \t' )
 _OV_DONE="$TMP_ROOT/gstack-ov-done-$_OV_LANE"
 _OV_LAUNCHED="$TMP_ROOT/gstack-ov-launched-$_OV_LANE"
 # The adapter's STDOUT is the review itself on the codex backend, which emits no findings
@@ -619,6 +627,13 @@ grep "tokens used" "$TMPERR" 2>/dev/null || echo "tokens: unknown"
    never as a plain PASS. A degraded gate reported as a full one is worse than no gate,
    because it is the same words with none of the coverage, and the warning that said so
    went to a stderr the verdict never read.
+
+   **The `--loop` path uses a DIFFERENT bar from the gate.** Its stop condition is no P1
+   **and no P2**, so for an `OV_FINDINGS_JSON:` line, `p1 > 0 || p2 > 0` means the loop
+   CONTINUES — report it as not-yet-converged, never as clean. Reading only `p1` there
+   would end the fix-verify loop with unresolved P2s outstanding, which is the one outcome
+   the stop condition exists to prevent. The gate's bar below is about a single pass/fail
+   verdict and is not the same question.
 
    **If a `GATE_FINDINGS_JSON:` line was printed, the verdict comes from it and from
    nothing else**: `p1 > 0` is **FAIL**, `p1 == 0` is **PASS**. The block is validated —
