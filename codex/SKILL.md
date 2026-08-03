@@ -1028,7 +1028,7 @@ the frontier gate is buying.
 First check readiness, then run:
 
 ```bash
-_GATE_MODE=$(~/.claude/skills/gstack/bin/gstack-outside-voice probe --phase final_gate 2>/dev/null || echo not_installed)
+_GATE_MODE=$(~/.claude/skills/gstack/bin/gstack-outside-voice probe --explicit --phase final_gate 2>/dev/null || echo not_installed)
 echo "GATE_MODE: $_GATE_MODE"
 ```
 

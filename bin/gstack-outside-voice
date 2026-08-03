@@ -71,6 +71,11 @@ set -euo pipefail
 _SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 _CONFIG="$_SELF_DIR/gstack-config"
 _STATE_DIR="${GSTACK_STATE_ROOT:-${GSTACK_HOME:-${GSTACK_STATE_DIR:-$HOME/.gstack}}}"
+# Scratch files honour the caller's resolved temp root. Step 0.6 moved the skill to
+# gstack-paths precisely so temp files work where /tmp is read-only or absent, and this
+# adapter then wrote its diff and response files under ${TMPDIR:-/tmp} anyway — so every
+# OpenRouter round failed before sending in exactly the environments TMP_ROOT exists for.
+_TMP_ROOT="${TMP_ROOT:-${TMPDIR:-/tmp}}"
 
 # Max bytes of diff inlined for a tool-less backend. Generous: the intended loop
 # voices carry ~1M-token windows. Exceeding it truncates LOUDLY (see below) —
@@ -148,12 +153,19 @@ resolve_backend() {
 # It is deliberately NOT folded into `disabled`: "off on purpose" and "off because
 # you typo'd it" want opposite responses from the operator, and a state that cannot
 # distinguish them is how the typo survives.
+# RECONCILED WITH cmd_exec. A guard built on probe and a refusal built into exec must answer
+# the same question, or the guard blocks what exec would run. These diverged four separate
+# times — the key's whitespace, the model id, the master switch, the base URL — so anything
+# added to one belongs in the other.
 probe() {
-  local phase="$1" backend
+  local phase="$1" explicit="${2:-no}" backend
   # Master switch first, for the same reason as cmd_exec: with reviews off, a misnamed backend
   # has no consequences, and reporting `misconfigured` there sends the operator to fix a value
   # nothing will read.
-  if [ "$(_cfg codex_reviews)" = "disabled" ]; then echo "disabled"; return 0; fi
+  # --explicit, same as cmd_exec: codex_reviews governs the AUTOMATIC passes. Without it the
+  # gate guard — which is built on probe — reported `disabled` and skipped a review the user
+  # had asked for by name, while exec would have run it.
+  if [ "$explicit" != "yes" ] && [ "$(_cfg codex_reviews)" = "disabled" ]; then echo "disabled"; return 0; fi
   backend="$(resolve_backend "$phase")"
 
   if [ "$backend" = "misconfigured" ]; then echo "misconfigured"; return 0; fi
@@ -193,6 +205,14 @@ probe() {
   # before any review ran. The generated skill instructions branch on probe FIRST, which makes
   # probe's contract the thing callers actually rely on — it has to cover what exec enforces.
   [ "$(_cfg outside_voice_loop_model)" = "__blank__" ] && { echo "misconfigured"; return 0; }
+  # The base URL too. The request layer refuses anything but https, or http on loopback, so an
+  # override like ftp:// or a remote http:// passed preflight and failed at request time —
+  # breaking the readiness contract the generated skills branch on, over a value probe never read.
+  case "${GSTACK_OUTSIDE_VOICE_BASE_URL:-https://openrouter.ai/api/v1}" in
+    https://*) : ;;
+    http://127.0.0.1*|http://localhost*|"http://[::1]"*) : ;;
+    *) echo "misconfigured"; return 0 ;;
+  esac
   echo "ready"
 }
 
@@ -462,7 +482,7 @@ cmd_exec() {
   # not installed or $OPENROUTER_API_KEY is unset: the operator is sent to do a repo-wide
   # consistency sweep to fix an install error. Same ordering mistake as the disabled/misconfigured
   # cases in round 21, one class further along: ask "can this run at all" before "is it allowed to".
-  _readiness="$(probe "$phase")"
+  _readiness="$(probe "$phase" "$explicit")"
   case "$_readiness" in
     not_installed) die "the $backend backend's client is not installed. For codex: npm install -g @openai/codex. For openrouter: install python3." ;;
     not_authed)    die "the $backend backend has no credentials. For codex: codex login, or set \$CODEX_API_KEY. For openrouter: set \$OPENROUTER_API_KEY." ;;
@@ -590,7 +610,7 @@ exec_openrouter() {
   local diff_file=""
   local truncated="no"
   if [ "$repo_context" = "diff" ]; then
-    diff_file=$(mktemp "${TMPDIR:-/tmp}/gstack-ov-diff-XXXXXXXX.txt")
+    diff_file=$(mktemp "$_TMP_ROOT/gstack-ov-diff-XXXXXXXX.txt")
     # Armed IMMEDIATELY, before any of the refusal paths below can `die`. Arming it later —
     # once the response file also exists — left every early exit leaking the diff, which is
     # the failure this trap was added to prevent, reintroduced by the very checks added
@@ -656,7 +676,7 @@ exec_openrouter() {
   fi
 
   local resp_file
-  resp_file=$(mktemp "${TMPDIR:-/tmp}/gstack-ov-resp-XXXXXXXX.json")
+  resp_file=$(mktemp "$_TMP_ROOT/gstack-ov-resp-XXXXXXXX.json")
 
   # The diff tempfile holds the full source of every changed file. Removing it only on the
   # success path meant a `timeout` SIGTERM — the routine outcome this script is wrapped in —
@@ -734,8 +754,10 @@ case "$_CMD" in
     resolve_backend "${2:?}"; echo ""
     ;;
   probe)
-    [ "${1:-}" = "--phase" ] || die "usage: gstack-outside-voice probe --phase <loop|final_gate>"
-    probe "${2:?}"
+    _pexp=no
+    [ "${1:-}" = "--explicit" ] && { _pexp=yes; shift; }
+    [ "${1:-}" = "--phase" ] || die "usage: gstack-outside-voice probe [--explicit] --phase <loop|final_gate>"
+    probe "${2:?}" "$_pexp"
     ;;
   *) die "unknown command '$_CMD' (want: exec|backend|probe)" ;;
 esac
