@@ -1068,7 +1068,7 @@ _OV_FINDINGS=$(mktemp "$TMP_ROOT/gstack-ov-findings-XXXXXX.json")
 _OV_EXIT=$?
 rm -f "$_LOOP_PROMPT"
 if [ "$_OV_EXIT" = "124" ]; then
-  _gstack_codex_log_event "codex_timeout" "330"
+  _gstack_codex_log_event "codex_timeout" "900"
 elif [ "$_OV_EXIT" = "4" ]; then
   # The reviewer ran but its severity block could not be parsed. This is NOT a clean round.
   echo "ROUND INVALID — findings block unusable. Do NOT count this as satisfying the stop condition; re-run the round."

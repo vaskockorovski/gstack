@@ -204,13 +204,31 @@ log_usage() {
     >> "$_STATE_DIR/analytics/outside-voice.jsonl" 2>/dev/null || true
 }
 
+# --- cleanup registry -------------------------------------------------------
+# A trap is a STRING evaluated later, so `trap "rm -f '$f'" EXIT` embeds the path inside shell
+# quoting — and a path containing a single quote closes that quoting early, leaving a trap that
+# deletes nothing while the diff (the full source of every changed file) survives in /tmp. This
+# file already learned once that a trap must be verified by firing it rather than by reading it;
+# a registry removes the class outright, because no path is ever interpolated into shell text.
+_OV_CLEANUP=()
+_ov_cleanup_run() { [ ${#_OV_CLEANUP[@]} -eq 0 ] || rm -f "${_OV_CLEANUP[@]}"; }
+_ov_cleanup_add() { _OV_CLEANUP+=("$@"); trap _ov_cleanup_run EXIT INT TERM; }
+
 # --- timeout wrapper (gtimeout → timeout → unwrapped) -----------------------
 
 with_timeout() {
   local _duration="$1"; shift
   local _to
   _to=$(command -v gtimeout 2>/dev/null || command -v timeout 2>/dev/null || echo "")
-  if [ -n "$_to" ]; then "$_to" "$_duration" "$@"; else "$@"; fi
+  if [ -n "$_to" ]; then
+    "$_to" "$_duration" "$@"
+  else
+    # Running uncapped is the only thing left to do — doing it SILENTLY is the defect. A caller
+    # that passed --timeout believes there is a cap, and a stalled request that is already
+    # billed will otherwise hold the process open with nothing to explain why.
+    echo "gstack-outside-voice: WARNING — neither gtimeout nor timeout is installed; running WITHOUT a ${_duration}s wall-clock cap. Install coreutils to enforce it." >&2
+    "$@"
+  fi
 }
 
 # --- pre-flight sweep gate --------------------------------------------------
@@ -241,7 +259,14 @@ preflight_gate() {
   # on a claude-fleet-config binary. Absent tool => no gate, silently.
   local _rl=""
   local _c
-  for _c in "$HOME/Development/cfc-live/claude/bin/codex-round-log.sh" \
+  # $GSTACK_ROUND_LEDGER first, so this is configurable rather than fleet-only. Five separate
+  # review rounds filed the hardcoded list as a defect — correctly, in the sense that a reader
+  # cannot tell "deliberately fleet-scoped" from "nobody considered other installs". The
+  # absent-tool behaviour is unchanged and still deliberate: an upstream install has no such
+  # binary and must be unaffected, since this adapter is headed for a third-party PR and cannot
+  # hard-depend on a claude-fleet-config script.
+  for _c in ${GSTACK_ROUND_LEDGER:+"$GSTACK_ROUND_LEDGER"} \
+            "$HOME/Development/cfc-live/claude/bin/codex-round-log.sh" \
             "$HOME/Development/claude-fleet-config/claude/bin/codex-round-log.sh"; do
     [ -x "$_c" ] && { _rl="$_c"; break; }
   done
@@ -483,7 +508,7 @@ exec_openrouter() {
     # `.cut` too: the truncation step writes it, then moves it over $diff_file. If that
     # pipeline aborts between the two, set -e exits, the trap fires, and the intermediate
     # survives — holding the same full source of every changed file the trap exists to remove.
-    trap "rm -f '$diff_file' '$diff_file.cut'" EXIT INT TERM
+    _ov_cleanup_add "$diff_file" "$diff_file.cut"
     # REFUSE rather than fall back. An earlier version fell back to `git diff HEAD` when the
     # base ref could not be resolved — which silently swaps "review this branch" for "review
     # my uncommitted edits". On a shallow clone, an unfetched fork remote, or a typo'd --base
@@ -543,11 +568,7 @@ exec_openrouter() {
   # `rm -f ''` is harmless, but naming the empty case keeps the intent readable when
   # --repo-context none means there is no diff file at all.
   # shellcheck disable=SC2064
-  if [ -n "$diff_file" ]; then
-    trap "rm -f '$resp_file' '$diff_file' '$diff_file.cut'" EXIT INT TERM
-  else
-    trap "rm -f '$resp_file'" EXIT INT TERM
-  fi
+  _ov_cleanup_add "$resp_file"
 
   local rc=0
   OR_MODEL="$model" OR_PROMPT_FILE="$prompt_file" OR_DIFF_FILE="$diff_file" \
