@@ -449,6 +449,70 @@ describe('the loop launcher passes paths as argv, not as shell text', () => {
   });
 });
 
+// Windows and Git Bash commonly ship a working `python` and no `python3`, so hard-coding the
+// name made the hosted backend unreachable there while Python sat installed. The fallback must
+// also VERIFY the major version: `python` is Python 2 on plenty of boxes, and accepting it on
+// name alone would let probe say `ready` and then hand Python 3 source to a Python 2 interpreter
+// — the probe-says-ready/exec-fails disagreement this adapter has already hit four times.
+describe('the hosted backend finds Python under either name, but only Python 3', () => {
+  const REAL_PY3 = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf-8' }).stdout.trim();
+
+  // Runs the adapter's OWN resolution lines, lifted verbatim, rather than a copy of them — a
+  // reimplementation here would be the very drift this suite exists to catch. Driving the full
+  // `probe` subcommand was tried first and is the wrong instrument: under a PATH stripped of
+  // python, gstack-config also fails, so every case returned not_installed for a reason that had
+  // nothing to do with Python and the fixture agreed with itself no matter what the code did.
+  function resolveBlock(): string {
+    const text = fs.readFileSync(ADAPTER, 'utf-8');
+    const m = text.match(/_PY="\$\(command -v python3[\s\S]*?\nfi\n/);
+    if (!m) throw new Error('the _PY resolution block was not found — did it move or get renamed?');
+    return m[0];
+  }
+
+  function resolvedWith(shims: Record<string, string>): string {
+    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-py-'));
+    for (const [name, body] of Object.entries(shims)) {
+      fs.writeFileSync(path.join(dir, name), body, { mode: 0o755 });
+    }
+    // PATH is reset to ONLY the shim dir INSIDE the script, so `command -v python3` can find
+    // nothing we did not put there. The spawn env keeps the real PATH, because Node resolves the
+    // `bash` executable itself through it — passing the shim dir here instead made every spawn
+    // fail silently, and the two negative cases then "passed" on a null stdout while measuring
+    // nothing at all. Only the positive cases exposed it.
+    const r = spawnSync('bash', ['-c', `PATH=${JSON.stringify(dir)}\n${resolveBlock()}\nprintf '%s' "$_PY"`],
+      { env: { PATH: process.env.PATH } as Record<string, string>, encoding: 'utf-8' });
+    fs.rmSync(dir, { recursive: true, force: true });
+    return (r.stdout || '').trim();
+  }
+
+  test('the block is still present to test', () => {
+    expect(REAL_PY3).toBeTruthy();
+    expect(resolveBlock()).toContain('version_info[0] == 3');
+  });
+
+  test('python3 by name wins when present', () => {
+    const out = resolvedWith({ python3: `#!/bin/sh\nexec ${REAL_PY3} "$@"\n` });
+    expect(out).toMatch(/python3$/);
+  });
+
+  // The Windows / Git Bash case that made the hosted backend unreachable.
+  test('a Python 3 named only `python` is accepted', () => {
+    const out = resolvedWith({ python: `#!/bin/sh\nexec ${REAL_PY3} "$@"\n` });
+    expect(out).toMatch(/\/python$/);
+  });
+
+  test('no python of any name resolves to nothing', () => {
+    expect(resolvedWith({})).toBe('');
+  });
+
+  // The trap the version check exists for. A name-only fallback would accept this and let probe
+  // report `ready`, then hand Python 3 source to a Python 2 interpreter at call time.
+  test('a `python` that is not Python 3 is rejected', () => {
+    // Fails the major-version probe exactly as a python2 binary would.
+    expect(resolvedWith({ python: '#!/bin/sh\nexit 1\n' })).toBe('');
+  });
+});
+
 describe('the retry prompt cannot feed a live fence back to the model', () => {
   const REQUEST = path.join(ROOT, 'bin', 'gstack-outside-voice-request.py');
 

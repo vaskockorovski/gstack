@@ -70,6 +70,21 @@ set -euo pipefail
 
 _SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 _CONFIG="$_SELF_DIR/gstack-config"
+# The interpreter that issues the hosted request, resolved ONCE. `python3` by name, else a
+# `python` that really is Python 3. Windows and Git Bash commonly ship a working `python` and no
+# `python3` — gstack-config already falls back this way — so hard-coding the name made the whole
+# openrouter backend unreachable there while Python sat installed.
+#
+# The fallback VERIFIES the major version instead of trusting the name, which the precedent does
+# not. `python` is Python 2 on plenty of boxes; accepting it on `command -v` alone would let
+# probe report `ready` and then hand Python 3 source to a Python 2 interpreter, failing with a
+# SyntaxError at call time. That is the probe-says-ready/exec-fails disagreement this adapter has
+# already hit four times, and trading an unreachable backend for a fifth one is not a fix.
+_PY="$(command -v python3 2>/dev/null || true)"
+if [ -z "$_PY" ] && command -v python >/dev/null 2>&1; then
+  python -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' >/dev/null 2>&1 \
+    && _PY="$(command -v python)"
+fi
 _STATE_DIR="${GSTACK_STATE_ROOT:-${GSTACK_HOME:-${GSTACK_STATE_DIR:-$HOME/.gstack}}}"
 # Scratch files honour the caller's resolved temp root. Step 0.6 moved the skill to
 # gstack-paths precisely so temp files work where /tmp is read-only or absent, and this
@@ -186,7 +201,7 @@ probe() {
   # for a while, which is a different program: a box with curl and no python3 reported "ready"
   # and then failed at call time, and a box with python3 and no curl reported "not_installed"
   # while being perfectly capable. Probe the thing you are about to run.
-  command -v python3 >/dev/null 2>&1 || { echo "not_installed"; return 0; }
+  [ -z "$_PY" ] && { echo "not_installed"; return 0; }
   local _ork
   _ork=$(printf '%s' "${OPENROUTER_API_KEY:-}" | tr -d '[:space:]')
   # Fail LOUD, not silent: an absent key on a phase explicitly configured for
@@ -216,7 +231,7 @@ probe() {
   # working config was called misconfigured. A prefix glob cannot express "the host IS loopback".
   # This is the fourth time the two sides disagreed about "usable" — hence deriving, not patching.
   GSTACK_OUTSIDE_VOICE_BASE_URL="${GSTACK_OUTSIDE_VOICE_BASE_URL:-}" \
-    python3 "$_SELF_DIR/gstack-outside-voice-request.py" --check-base-url 2>/dev/null \
+    "$_PY" "$_SELF_DIR/gstack-outside-voice-request.py" --check-base-url 2>/dev/null \
     || { echo "misconfigured"; return 0; }
   echo "ready"
 }
@@ -349,7 +364,7 @@ preflight_gate() {
   }
 
   local _verdict
-  _verdict=$(printf '%s' "$_json" | python3 -c '
+  _verdict=$(printf '%s' "$_json" | "$_PY" -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
@@ -667,6 +682,23 @@ exec_openrouter() {
     if ! git -C "$repo_root" diff "$base"...HEAD ${pathspecs[@]+-- "${pathspecs[@]}"} > "$diff_file" 2>/dev/null; then
       die "could not compute 'git diff $base...HEAD${pathspecs[@]+ -- ${pathspecs[*]}}' in $repo_root. Refusing to substitute a different diff."
     fi
+    # Committed work ONLY, deliberately — see the branch-to-branch note above, which records
+    # that a `git diff HEAD` fallback was REMOVED for silently swapping "review this branch" for
+    # "review my uncommitted edits". Do not reinstate it: a round over a dirty tree is not
+    # reproducible, and the round protocol commits between rounds precisely so each review has a
+    # fixed subject.
+    #
+    # But deliberate and invisible are different things, and this is the one place the two
+    # backends genuinely see different code: the codex backend explores the repo itself, so it
+    # can read uncommitted work, while this path can only see what is inlined. Switching backends
+    # therefore changes what gets reviewed, and nothing said so. Announce the gap — same shape as
+    # the truncation and degraded-gate warnings, which exist because a review that covers less
+    # than the reader assumes is indistinguishable from a clean one.
+    local _dirty
+    _dirty=$(git -C "$repo_root" status --porcelain --untracked-files=no 2>/dev/null | wc -l | tr -d '[:space:]')
+    if [ "${_dirty:-0}" -gt 0 ]; then
+      echo "gstack-outside-voice: WARNING — $_dirty tracked file(s) have uncommitted changes. This review covers '$base...HEAD' (committed work) ONLY; those edits were NOT reviewed. Commit them and re-run if they were meant to be in scope." >&2
+    fi
     local _sz
     _sz=$(wc -c < "$diff_file" | tr -d '[:space:]')
     # An EMPTY diff is not a clean review, it is no review. Saying so is the difference
@@ -730,7 +762,7 @@ exec_openrouter() {
   OR_PATHSPEC="$_or_pathspec" \
   OR_TIMEOUT="$timeout_s" OR_FINDINGS="$findings_out" \
   GSTACK_OUTSIDE_VOICE_BASE_URL="${GSTACK_OUTSIDE_VOICE_BASE_URL:-}" \
-  with_timeout "$timeout_s" python3 "$_SELF_DIR/gstack-outside-voice-request.py" || rc=$?
+  with_timeout "$timeout_s" "$_PY" "$_SELF_DIR/gstack-outside-voice-request.py" || rc=$?
 
   if [ "$truncated" = "yes" ]; then
     echo "gstack-outside-voice: WARNING — diff exceeded ${_MAX_DIFF_BYTES} bytes and was truncated; this review does NOT cover the omitted tail." >&2
@@ -745,18 +777,18 @@ exec_openrouter() {
   if [ -s "$resp_file" ]; then
     # JSON null (usage absent from the API response) prints as None; map it back to the
     # `unknown` sentinel rather than letting `tr -cd '0-9'` silently flatten it to 0.
-    ptok=$(python3 -c 'import json,sys
+    ptok=$("$_PY" -c 'import json,sys
 v=json.load(open(sys.argv[1])).get("prompt_tokens")
 print("unknown" if v is None else v)' "$resp_file" 2>/dev/null || echo unknown)
-    ctok=$(python3 -c 'import json,sys
+    ctok=$("$_PY" -c 'import json,sys
 v=json.load(open(sys.argv[1])).get("completion_tokens")
 print("unknown" if v is None else v)' "$resp_file" 2>/dev/null || echo unknown)
-    rmodel=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("model",""))' "$resp_file" 2>/dev/null || echo "$model")
+    rmodel=$("$_PY" -c 'import json,sys;print(json.load(open(sys.argv[1])).get("model",""))' "$resp_file" 2>/dev/null || echo "$model")
     # Carry the partial marker through to the log. Recording it only in a tempfile that is
     # deleted seconds later is the same failure as printing a caveat to a stderr nobody reads:
     # the number survives and the reason it might be wrong does not.
-    rpartial=$(python3 -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("tokens_partial") else "false")' "$resp_file" 2>/dev/null || echo false)
-    rreason=$(python3 -c 'import json,sys
+    rpartial=$("$_PY" -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("tokens_partial") else "false")' "$resp_file" 2>/dev/null || echo false)
+    rreason=$("$_PY" -c 'import json,sys
 v=json.load(open(sys.argv[1])).get("reasoning_tokens")
 print("unknown" if v is None else v)' "$resp_file" 2>/dev/null || echo unknown)
   fi
