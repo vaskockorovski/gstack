@@ -28,7 +28,13 @@ beforeAll(async () => {
 
 afterAll(() => {
   try { testServer.server.stop(); } catch {}
-  setTimeout(() => process.exit(0), 500);
+  // Force-exit ONLY when this file is run on its own. Under an aggregate `bun test`
+  // run this killed the SHARED runner with status 0 as soon as THIS file finished,
+  // truncating the run and discarding every failure recorded up to that point — so a
+  // red suite reported green and could not fail CI. garrytan/gstack#2435.
+  // It exists because the browser/server handles above keep the loop alive; opting in
+  // preserves that standalone convenience without letting one file end everyone's run.
+  if (process.env.GSTACK_TEST_FORCE_EXIT === '1') setTimeout(() => process.exit(0), 500);
 });
 
 // ─── Unit Tests: Failure Tracking (no browser needed) ────────────
