@@ -1026,7 +1026,11 @@ PROMPT
 _CODEX_EXIT=$?
 rm -f "$_GATE_PROMPT"
 if [ "$_CODEX_EXIT" = "124" ]; then
-  _gstack_codex_log_event "codex_timeout" "330"
+  # Named for the backend that actually timed out, same as the loop path.
+  # outside_voice_gate defaults to codex but is CONFIGURABLE, so `codex_timeout` here was
+  # correct only for the default — the identical mislabel fixed on the loop path in round
+  # 24 and left standing on its sibling. Found by a structural sweep, not by a round.
+  _gstack_codex_log_event "outside_voice_timeout" "gate:$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase final_gate 2>/dev/null || echo unknown):330"
   _gstack_codex_log_hang "review" "$(wc -c < "$TMPERR" 2>/dev/null || echo 0)"
   echo "Codex stalled past 5.5 minutes. Common causes: model API stall, long prompt, network issue. Try re-running. If persistent, split the prompt or check ~/.codex/logs/."
 elif [ "$_CODEX_EXIT" = "2" ] || [ "$_CODEX_EXIT" = "3" ] || [ "$_CODEX_EXIT" = "4" ] || [ "$_CODEX_EXIT" = "5" ]; then
