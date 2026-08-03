@@ -370,7 +370,17 @@ def content_of(payload, on_fail=None):
         sys.stderr.write("openrouter error: %s\n" % json.dumps(payload["error"])[:2000])
         bail()
     choices = payload.get("choices") or []
-    text = (choices[0].get("message", {}).get("content") if choices else "") or ""
+    raw_content = (choices[0].get("message", {}).get("content") if choices else "") or ""
+    if isinstance(raw_content, list):
+        # OpenAI-compatible proxies may return content as an ARRAY OF PARTS rather than a
+        # string. text.strip() on a list raises AttributeError — after the request was billed
+        # and before the usage row or findings file is written, so the money is spent and the
+        # round leaves no trace. The base URL is overridable precisely so such backends can be
+        # used, which makes this a supported configuration rather than an exotic one.
+        text = "".join(part.get("text", "") if isinstance(part, dict) else str(part)
+                       for part in raw_content)
+    else:
+        text = raw_content if isinstance(raw_content, str) else str(raw_content)
     if not text.strip():
         # WHY it is empty decides what to do about it, and the two causes need opposite
         # responses. finish_reason == "length" means the model spent its entire output budget

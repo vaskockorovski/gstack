@@ -454,7 +454,18 @@ cmd_exec() {
         echo "gstack-outside-voice: note — the codex backend does not emit a structured findings block; no findings file written. Read codex's own output for severities." >&2
       fi
       exec_codex "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$codex_mode" ;;
-    openrouter) exec_openrouter "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$repo_context" "$base" "$findings_out" ${pathspecs[@]+"${pathspecs[@]}"} ;;
+    openrouter)
+      # An openrouter FINAL GATE is not the thing the name promises, and the config accepts it
+      # without saying so. exec_openrouter always uses outside_voice_loop_model and always
+      # inlines a diff — so the "final gate" silently becomes a second loop-style pass on the
+      # cheap model, and repo-scoped defects in untouched files stop being discoverable while
+      # the run is still reported as the gate. That is the exact class this tier exists to
+      # catch: the gate found a sibling-path drift in this very repo that 21 diff-scoped loop
+      # rounds could not see. Configuring it this way is allowed, but it must not be silent.
+      if [ "$phase" = "final_gate" ]; then
+        echo "gstack-outside-voice: WARNING — outside_voice_gate=openrouter runs the gate as a DIFF-SCOPED review on the loop model ($(_cfg outside_voice_loop_model)), not a repository-scoped one. Defects that live in files this branch did not touch cannot be found this way. This is a degraded gate; do not report it as equivalent to the codex gate." >&2
+      fi
+      exec_openrouter "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$repo_context" "$base" "$findings_out" ${pathspecs[@]+"${pathspecs[@]}"} ;;
   esac
 }
 

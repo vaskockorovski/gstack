@@ -1030,6 +1030,12 @@ if [ "$_GATE_RAN" != "yes" ]; then
 else
 _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
 _GATE_PROMPT=$(mktemp "$TMP_ROOT/gstack-gate-prompt-XXXXXX.txt")
+# Asking for a VALIDATED block rather than trusting the prose. Round 1 of the gate fixed the
+# same false-PASS by telling the model to write [P1]; that is the weaker half of the pair,
+# because a hosted model can still write "P1:" or "Critical" and step 4's grep finds nothing.
+# The codex backend ignores this flag by design and says so — it owns its output format — so
+# passing it unconditionally costs the default path nothing.
+_GATE_FINDINGS=$(mktemp "$TMP_ROOT/gstack-gate-findings-XXXXXX.json")
 cat > "$_GATE_PROMPT" <<'PROMPT'
 IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. Do NOT modify agents/openai.yaml. Stay focused on repository code only.
 
@@ -1042,7 +1048,7 @@ PROMPT
 ~/.claude/skills/gstack/bin/gstack-outside-voice exec \
   --phase final_gate --codex-mode review \
   --prompt-file "$_GATE_PROMPT" --repo-root "$_REPO_ROOT" \
-  --effort high --timeout 330 < /dev/null 2>"$TMPERR"
+  --effort high --timeout 330 --findings-out "$_GATE_FINDINGS" < /dev/null 2>"$TMPERR"
 _CODEX_EXIT=$?
 rm -f "$_GATE_PROMPT"
 if [ "$_CODEX_EXIT" = "124" ]; then
@@ -1079,6 +1085,13 @@ elif [ -s "$TMPERR" ]; then
   echo "[outside-voice notes — the gate SUCCEEDED; these qualify it]"
   head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
 fi
+# Prefer the validated block over the prose whenever one exists. Absent means the codex
+# backend ran and owns its own format — read its [P1] markers as before.
+if [ "$_CODEX_EXIT" = "0" ] && [ -s "$_GATE_FINDINGS" ]; then
+  echo "GATE_FINDINGS_JSON: $(cat "$_GATE_FINDINGS")"
+  echo "Use these counts for the step 4 verdict, NOT a grep of the prose."
+fi
+rm -f "$_GATE_FINDINGS"
 fi
 ```
 
