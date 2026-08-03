@@ -365,8 +365,11 @@ cmd_exec() {
   local backend
   backend="$(resolve_backend "$phase")"
 
-  preflight_gate "$phase" "$repo_root"
-
+  # Settle whether a review will happen AT ALL before demanding a pre-flight sweep. The gate
+  # refuses round 1 until a structural sweep is on record — sound when a round is about to run,
+  # absurd when the backend is `disabled` or misnamed: the operator is told to go do a
+  # repo-wide consistency sweep as the price of a review that was never going to happen, and
+  # the message says nothing about the backend, which is the actual problem.
   case "$backend" in
     misconfigured)
       # Refuse rather than fall back. Naming the key and the phase is the whole fix — the
@@ -375,6 +378,11 @@ cmd_exec() {
       [ "$phase" = "final_gate" ] && _key="outside_voice_gate"
       die "$_key is set to an unrecognised value (want: codex|openrouter|disabled). Refusing to guess a backend — a wrong guess either bills the frontier price for every loop round or quietly weakens the gate. Fix ~/.gstack/config.yaml, or run: gstack-config set $_key <codex|openrouter|disabled>" ;;
     disabled) echo "OUTSIDE_VOICE_DISABLED phase=$phase" >&2; return 3 ;;
+  esac
+
+  preflight_gate "$phase" "$repo_root"
+
+  case "$backend" in
     codex)
       # WARN and continue, never die. The loop path always passes --findings-out, and
       # outside_voice_loop DEFAULTS to codex — so dying here made `/codex review --loop` fail
