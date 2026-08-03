@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -86,6 +86,75 @@ describe('backend resolution refuses to guess', () => {
     });
     fs.rmSync(home, { recursive: true, force: true });
     expect((r.stdout || '').trim()).toBe('codex');
+  });
+});
+
+describe('the API key never travels across a redirect', () => {
+  // The scheme allowlist validates the URL we were CONFIGURED with. It cannot see where that
+  // URL points us next — and urllib follows 301/302/303 on a POST while forwarding request
+  // headers, including Authorization, including to a plain-http target. Probed in a local
+  // harness before this was written: all three codes leaked a Bearer token. 307 happens to
+  // raise instead, which is safety by accident. So the allowlist is worth exactly as much as
+  // this refusal, and the refusal needs a test that actually performs the hop.
+  test('a redirecting base URL is refused before the second request is made', () => {
+    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-ov-redir-'));
+    const marker = path.join(dir, 'leaked');
+    fs.writeFileSync(
+      path.join(dir, 'stub.py'),
+      [
+        'import threading, time, sys',
+        'from http.server import BaseHTTPRequestHandler, HTTPServer',
+        'class T(BaseHTTPRequestHandler):',
+        '    def do_GET(self):',
+        `        open(${JSON.stringify(marker)}, "w").write(self.headers.get("Authorization") or "")`,
+        '        b=b"{}"; self.send_response(200); self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)',
+        '    do_POST = do_GET',
+        '    def log_message(self,*a): pass',
+        'class R(BaseHTTPRequestHandler):',
+        '    def do_POST(self):',
+        '        self.rfile.read(int(self.headers.get("Content-Length", 0)))',
+        '        self.send_response(302); self.send_header("Location","http://127.0.0.1:8794/v1")',
+        '        self.send_header("Content-Length","0"); self.end_headers()',
+        '    def log_message(self,*a): pass',
+        'threading.Thread(target=HTTPServer(("127.0.0.1",8794), T).serve_forever, daemon=True).start()',
+        'threading.Thread(target=HTTPServer(("127.0.0.1",8793), R).serve_forever, daemon=True).start()',
+        'print("up", flush=True)',
+        'time.sleep(20)',
+      ].join('\n'),
+    );
+    const stub = spawn('python3', [path.join(dir, 'stub.py')], { stdio: 'ignore' });
+    try {
+      // A readiness handshake over stdout does not work here: spawnSync below blocks node's
+      // event loop, so the 'data' callback can never fire and the wait burns the whole test
+      // budget. Poll the port with a blocking probe instead — same information, no event loop.
+      for (let i = 0; i < 50; i++) {
+        const up = spawnSync('bash', ['-c', 'exec 3<>/dev/tcp/127.0.0.1/8793'], { encoding: 'utf-8' });
+        if (up.status === 0) break;
+        spawnSync('sleep', ['0.1']);
+      }
+
+      const prompt = path.join(dir, 'p.txt');
+      fs.writeFileSync(prompt, 'review\n');
+      const r = spawnSync('python3', [path.join(ROOT, 'bin', 'gstack-outside-voice-request.py')], {
+        env: {
+          PATH: process.env.PATH,
+          OR_MODEL: 'stub',
+          OR_PROMPT_FILE: prompt,
+          OR_RESP: path.join(dir, 'r.json'),
+          OR_TIMEOUT: '30',
+          OPENROUTER_API_KEY: 'sk-or-v1-test-value-never-to-be-forwarded',
+          GSTACK_OUTSIDE_VOICE_BASE_URL: 'http://127.0.0.1:8793/v1',
+        } as Record<string, string>,
+        encoding: 'utf-8',
+      });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/refusing to follow a redirect/);
+      // The property that matters is not the message — it is that the hop never happened.
+      expect(fs.existsSync(marker)).toBe(false);
+    } finally {
+      stub.kill();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

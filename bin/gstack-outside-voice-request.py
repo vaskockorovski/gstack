@@ -196,6 +196,29 @@ if _EFFORT and REASONING_EFFORT != _EFFORT:
                      "instead.\n" % (_EFFORT, REASONING_EFFORT))
 
 
+class RedirectRefused(Exception):
+    """A redirect was returned. We do not follow it, and that is a security decision.
+
+    urllib follows 301/302/303 on a POST (converting it to GET) and FORWARDS the request
+    headers to the new location — including Authorization, including to a plain `http://`
+    target. Probed, not assumed: all three codes leaked a Bearer token to an http host in a
+    local harness; 307 happens to raise instead, which is safety by accident rather than by
+    design. The scheme allowlist above validates the URL we were configured with, and cannot
+    see where that URL points us next, so the guard is only worth as much as this refusal.
+
+    The OpenRouter API does not redirect. One that does is either a misconfiguration or
+    something worse, and neither is a reason to hand over the key.
+    """
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise RedirectRefused("%s -> %s" % (code, newurl))
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def ask(message, on_fail=None):
     body = json.dumps({"model": model,
                        "messages": [{"role": "user", "content": message}],
@@ -214,7 +237,7 @@ def ask(message, on_fail=None):
         # the handshake and then stalls holds the read open until the outer timeout kills the
         # process group — by which point the request is billed and nothing is returned.
         sock_timeout = max(30, int(os.environ.get("OR_TIMEOUT", "330")) - 30)
-        with urllib.request.urlopen(req, timeout=sock_timeout) as r:
+        with _OPENER.open(req, timeout=sock_timeout) as r:
             raw = r.read()
         try:
             return json.loads(raw)
@@ -232,6 +255,15 @@ def ask(message, on_fail=None):
             if on_fail is not None:
                 on_fail()
             sys.exit(1)
+    except RedirectRefused as e:
+        sys.stderr.write("refusing to follow a redirect (%s). The Authorization header would "
+                         "travel with it — urllib forwards request headers across 301/302/303 "
+                         "even to a plain-http target — so a redirect is a key-disclosure "
+                         "vector, not a routing detail. Check "
+                         "GSTACK_OUTSIDE_VOICE_BASE_URL.\n" % e)
+        if on_fail is not None:
+            on_fail()
+        sys.exit(1)
     except urllib.error.HTTPError as e:
         # Print the API error WITHOUT echoing the request. Never print the Authorization header.
         sys.stderr.write("openrouter HTTP %s: %s\n"
@@ -436,6 +468,11 @@ def write_usage(prompt_tokens, completion_tokens, served_model):
                    "model": served_model}, fh)
 
 
+# No on_fail on THIS call, deliberately — reported as a defect twice, so state why. Nothing
+# has been billed yet that we know a figure for: if this request fails there is no usage block
+# to record, and the shell wrapper already writes an `error_N` row with null tokens for the
+# round as a whole. The retry call below is different, and does pass one, because by then the
+# FIRST call has succeeded and its counts are in hand.
 payload = ask(prompt)
 # Read the cost BEFORE validating the content: every path below that can exit describes a
 # request that already reached the API and was already billed.

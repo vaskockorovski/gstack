@@ -254,7 +254,7 @@ PROMPT
 _OV_FINDINGS=$(mktemp "$TMP_ROOT/gstack-ov-findings-XXXXXX.json")
 ~/.claude/skills/gstack/bin/gstack-outside-voice exec \
   --phase loop --prompt-file "$_LOOP_PROMPT" --repo-root "$_REPO_ROOT" \
-  --base "origin/<base>" --effort high --timeout 330 \
+  --base "origin/<base>" --effort medium --timeout 900 \
   --findings-out "$_OV_FINDINGS" < /dev/null 2>"$TMPERR"
 _OV_EXIT=$?
 rm -f "$_LOOP_PROMPT"
@@ -330,6 +330,11 @@ Two things about this path that are easy to get wrong:
   **diff-scoped** while the frontier gate is **repo-scoped**, and a defect only
   visible in an untouched file is exactly what the gate is still there to catch.
   Do not read a clean loop round as a clean gate round.
+- **A large diff needs wall-clock, not just context.** The loop call above uses 900s
+  because 330 is not enough on a real branch: measured on this adapter's own review
+  loop, rounds ran 5-15 minutes and a 170KB diff needed 1800s to complete at all. A
+  round killed by the cap is billed and returns nothing, so the cap is a cost, not a
+  safety net — raise `--timeout` before concluding the backend is broken.
 - **An oversized diff is truncated**, with a warning on stderr and a notice inside
   the prompt. If you see that warning, the round did not cover the whole change.
   Truncation cuts on a LINE boundary, so a single line longer than the cap can leave
