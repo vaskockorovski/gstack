@@ -232,8 +232,17 @@ the frontier gate is buying.
 First check readiness, then run:
 
 ```bash
-_GATE_MODE=$(~/.claude/skills/gstack/bin/gstack-outside-voice probe --explicit --phase final_gate 2>/dev/null || echo not_installed)
+# `|| echo not_installed` used to stand in for EVERY non-zero exit, which is a diagnosis, not a
+# fallback: an unreadable ~/.gstack/config.yaml or a broken helper reported the backend as
+# ABSENT, sending the operator to install something that was already installed while the real
+# error went to /dev/null. Probe returns its states on stdout with exit 0, so a non-zero exit
+# means the probe ITSELF failed and is a distinct state — keep it distinct, and keep its stderr.
+_GATE_PROBE_ERR=$(mktemp "$TMP_ROOT/gstack-gate-probe-err-XXXXXX.txt")
+_GATE_MODE=$(~/.claude/skills/gstack/bin/gstack-outside-voice probe --explicit --phase final_gate 2>"$_GATE_PROBE_ERR") \
+  || _GATE_MODE=probe_failed
 echo "GATE_MODE: $_GATE_MODE"
+[ "$_GATE_MODE" = probe_failed ] && { echo "PROBE FAILED — its own stderr follows:"; cat "$_GATE_PROBE_ERR"; }
+rm -f "$_GATE_PROBE_ERR"
 ```
 
 Branch on it exactly as for `CODEX_MODE` above (`disabled` / `not_installed` /
@@ -260,6 +269,7 @@ if [ "$_GATE_MODE" != "ready" ]; then
     misconfigured) echo "GATE NOT RUN — the outside-voice configuration is unusable. TWO keys produce this state: \`$_GATE_KEY\` holding an unrecognised value, or \`outside_voice_loop_model\` blank or carrying whitespace. Run \`gstack-outside-voice backend --phase final_gate\` for the precise message — it names the key. NOT a clean gate; nothing was reviewed." ;;
     disabled)      echo "GATE NOT RUN — outside-voice review is off for this phase. Two switches produce it: \`codex_reviews\` and \`$_GATE_KEY\`. NOT a clean gate; nothing was reviewed." ;;
     not_authed)    echo "GATE NOT RUN — the configured gate backend has no credentials. NOT a clean gate; nothing was reviewed." ;;
+    probe_failed)  echo "GATE NOT RUN — the readiness probe itself failed, so the backend's state is UNKNOWN rather than bad. Its stderr was printed above; likeliest causes are an unreadable ~/.gstack/config.yaml or a broken gstack-outside-voice install. Do NOT read this as 'not installed'. NOT a clean gate; nothing was reviewed." ;;
     *)             echo "GATE NOT RUN — outside voice is '$_GATE_MODE' for the final_gate phase. NOT a clean gate; nothing was reviewed." ;;
   esac
   echo "NO outside-voice gate ran. This skill defines no Claude fallback for the gate, so step 4 has nothing to derive a verdict from: report the gate as NOT RUN rather than as PASS, and fix the configuration named above before relying on it."

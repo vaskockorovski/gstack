@@ -162,7 +162,15 @@ _TEL=$(~/.claude/skills/gstack/bin/gstack-config get telemetry 2>/dev/null || ec
 # it fire. Hardening one layer while the layer that reports it stays quiet just relocates the
 # silence.
 _OV_BACKEND=$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase ${opts.phase} || echo codex)
-${m}=$(~/.claude/skills/gstack/bin/gstack-outside-voice probe --phase ${opts.phase} 2>/dev/null || echo not_installed)
+# A non-zero exit means the PROBE failed, not that the backend is absent. Reporting it as
+# \`not_installed\` is a diagnosis rather than a fallback: an unreadable ~/.gstack/config.yaml or a
+# broken helper sent the user to install a client that was already installed, while the real
+# error went to /dev/null. Probe reports its states on stdout and exits 0, so keep the failure
+# as its own state and keep the stderr that explains it.
+_OV_PROBE_ERR=$(mktemp "\${TMPDIR:-/tmp}/gstack-probe-err-XXXXXX")
+${m}=$(~/.claude/skills/gstack/bin/gstack-outside-voice probe --phase ${opts.phase} 2>"$_OV_PROBE_ERR") || ${m}=probe_failed
+[ "$${m}" = probe_failed ] && { echo "PROBE FAILED — its own stderr follows:"; cat "$_OV_PROBE_ERR"; }
+rm -f "$_OV_PROBE_ERR"
 # Version-check only applies to the codex backend; a hosted API has no local CLI.
 if [ "$_OV_BACKEND" = "codex" ] && [ "$${m}" = "ready" ]; then
   source ~/.claude/skills/gstack/bin/gstack-codex-probe 2>/dev/null || true
@@ -177,5 +185,6 @@ Branch on the echoed \`CODEX_MODE\` (the backend named by \`OUTSIDE_VOICE_BACKEN
 - **\`not_installed\`** — the backend's client is absent (Codex CLI missing, or \`python3\` missing for a hosted backend — that is the program which actually issues the request; an earlier version probed \`curl\`, which is a different program and reported ready on a box that could not run the call). Print: "Outside voice not available for the ${opts.phase} phase — using Claude subagent." Fall back to the Claude subagent path.
 - **\`not_authed\`** — the backend is selected but has no credentials. For \`codex\`: run \`codex login\` or set \`$CODEX_API_KEY\`. For \`openrouter\`: set \`$OPENROUTER_API_KEY\`. **Do NOT silently reroute to the other backend** — a phase configured for the cheap tier must never quietly bill the frontier one, and a gate configured for frontier must never quietly downgrade. Print the cause and fall back to the Claude subagent path.
 - **\`misconfigured\`** — \`outside_voice_${opts.phase === 'loop' ? 'loop' : 'gate'}\` holds a value that is not \`codex\`, \`openrouter\` or \`disabled\`. **Do NOT treat this as \`disabled\` and do NOT pick a backend for the user.** "Off on purpose" and "off because of a typo" want opposite responses, and guessing either bills the frontier price for every loop round or quietly weakens the gate. Print: "Outside voice is misconfigured for the ${opts.phase} phase — fix \`outside_voice_${opts.phase === 'loop' ? 'loop' : 'gate'}\` in ~/.gstack/config.yaml." Fall back to the Claude subagent path. (\`exec\` refuses this state outright with exit 2.)
+- **\`probe_failed\`** — the readiness probe itself exited non-zero, so the backend's state is **unknown**, not bad. Its stderr was printed above; the likeliest causes are an unreadable \`~/.gstack/config.yaml\` or a broken \`gstack-outside-voice\` install. **Do NOT read this as \`not_installed\`** — that sends the user to reinstall a client that is already there. Print the cause and fall back to the Claude subagent path.
 - **\`ready\`** — run the outside-voice pass below via \`gstack-outside-voice exec --phase ${opts.phase}\`.`;
 }
