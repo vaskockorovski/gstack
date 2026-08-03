@@ -114,7 +114,15 @@ FINDINGS_CONTRACT_TMPL = """
 ---
 MANDATORY OUTPUT CONTRACT — your response is parsed by a program.
 
-After your prose review, emit EXACTLY ONE fenced block, last in your response.
+Emit EXACTLY ONE fenced block FIRST, before any prose. Then write your prose review
+below it.
+
+The block goes first because your output can be truncated. Three rounds of this loop
+have been discarded entirely after the reply hit its output cap mid-review: the prose
+was written, the block never arrived, and the round established nothing while billing
+in full. With the block first, a truncated reply still carries the findings and only
+loses commentary.
+
 The fence marker below is unique to this request — copy it CHARACTER FOR CHARACTER,
 including the trailing hex. A block with any other fence is ignored entirely.
 
@@ -127,7 +135,8 @@ Rules, all enforced by the parser:
 - severity is exactly one of P1, P2, P3.
 - The counts MUST equal the number of findings of each severity in the array.
 - If you found nothing, emit zeros and an empty array. Do NOT omit the block.
-- Emit the block even if your prose already lists the findings.
+- Emit the block even if your prose repeats the findings below it.
+- Decide your findings first, then write the block, then explain them in prose.
 A missing or malformed block is treated as a FAILED review, not as a clean one.
 """
 
@@ -359,8 +368,11 @@ def parse_findings(text):
     blocks = BLOCK_RE.findall(text)
     if not blocks:
         return None, "no fenced %s block found" % FENCE
-    # Last block wins. The contract puts the block last, and prose above may quote the example
-    # from the contract itself; taking the first would parse the illustration, not the answer.
+    # Last block wins. The contract now asks for the block FIRST — so that a reply truncated by
+    # the output cap still carries it — which makes this choice look wrong at a glance. It is
+    # not: the nonce is what distinguishes the answer from any echoed example, so first-vs-last
+    # no longer decides correctness, and last-wins remains the safer default if a model repeats
+    # the block after its prose (the later copy is the one it settled on).
     try:
         obj = json.loads(blocks[-1])
     except Exception as e:
@@ -465,16 +477,34 @@ def add_toks(a, b):
     return a + b
 
 
+def reasoning_toks(usage):
+    """Reasoning tokens, if the provider reports them.
+
+    On a reasoning model these are what actually exhausts the output cap — three rounds of
+    this loop died at exactly 65536 completion tokens having emitted no content at all, which
+    only makes sense if the budget went on reasoning. The cost log could not show that, so the
+    single most useful number for deciding whether the cheap tier fits a given diff size was
+    the one number it did not have. None when unreported: unknown is not zero.
+    """
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("completion_tokens_details")
+    if not isinstance(details, dict):
+        return None
+    return toks(details, "reasoning_tokens")
+
+
 def toks_partial(*values):
     """True when SOME contributing call reported usage and some did not."""
     known = [v is not None for v in values]
     return any(known) and not all(known)
 
 
-def write_usage(prompt_tokens, completion_tokens, served_model, partial=False):
+def write_usage(prompt_tokens, completion_tokens, served_model, partial=False, reasoning=None):
     with open(os.environ["OR_RESP"], "w") as fh:
         json.dump({"prompt_tokens": prompt_tokens,
                    "completion_tokens": completion_tokens,
+                   "reasoning_tokens": reasoning,
                    "model": served_model,
                    "tokens_partial": bool(partial)}, fh)
 
@@ -491,11 +521,12 @@ usage = payload.get("usage") or {}
 p_tok = toks(usage, "prompt_tokens")
 c_tok = toks(usage, "completion_tokens")
 served = payload.get("model", model)
+r_tok = reasoning_toks(usage)
 # Set only by the retry path, but declared here so every write_usage call site can name it
 # unconditionally. Reaching for locals().get() to paper over a maybe-undefined name is how a
 # NameError becomes a runtime surprise on the one path nobody exercises.
 PARTIAL = False
-text = content_of(payload, lambda: write_usage(p_tok, c_tok, served))
+text = content_of(payload, lambda: write_usage(p_tok, c_tok, served, False, r_tok))
 
 findings = None
 if findings_path:
@@ -529,13 +560,13 @@ if findings_path:
         # incurred — the same defect fixed for content_of two rounds ago, still open on the
         # sibling path, which is what "a fix is not done until every dependent site agrees"
         # means in practice.
-        payload2 = ask(retry, lambda: write_usage(p_tok, c_tok, served))
+        payload2 = ask(retry, lambda: write_usage(p_tok, c_tok, served, False, r_tok))
         usage2 = payload2.get("usage") or {}
         _p2, _c2 = toks(usage2, "prompt_tokens"), toks(usage2, "completion_tokens")
         PARTIAL = toks_partial(p_tok, _p2) or toks_partial(c_tok, _c2)
         p_tok = add_toks(p_tok, _p2)
         c_tok = add_toks(c_tok, _c2)
-        text2 = content_of(payload2, lambda: write_usage(p_tok, c_tok, served, PARTIAL))
+        text2 = content_of(payload2, lambda: write_usage(p_tok, c_tok, served, PARTIAL, r_tok))
         findings, why2 = parse_findings(text2)
         if findings is not None:
             # PROVENANCE. On a retried round the prose on stdout is the FIRST reply and the
@@ -550,7 +581,7 @@ if findings_path:
                 "count. This round did NOT establish that the artefact is clean — it must not "
                 "be treated as satisfying the stop condition.\n" % why2)
             sys.stdout.write(text)
-            write_usage(p_tok, c_tok, served, PARTIAL)
+            write_usage(p_tok, c_tok, served, PARTIAL, r_tok)
             sys.exit(4)
 
 sys.stdout.write(text)
@@ -565,4 +596,4 @@ if findings_path and findings is not None:
                         "  (counts came from the RE-PROMPT; the prose above is the first reply, "
                         "so the two can differ)" if findings.get("from_retry") else ""))
 
-write_usage(p_tok, c_tok, served, PARTIAL)
+write_usage(p_tok, c_tok, served, PARTIAL, r_tok)

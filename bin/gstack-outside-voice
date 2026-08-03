@@ -199,8 +199,11 @@ log_usage() {
   if [ "${6:-}" = "unknown" ]; then _ct=null
   else _ct=$(printf '%s' "${6:-0}" | tr -cd '0-9'); [ -n "$_ct" ] || _ct=0; fi
   local _pa="false"; [ "${8:-false}" = "true" ] && _pa="true"
-  printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"tokens_partial":%s,"status":"%s","ts":"%s"}\n' \
-    "$_b" "$_m" "$_p" "$_l" "$_pt" "$_ct" "$_pa" "$_st" "$_ts" \
+  local _rt
+  if [ "${9:-unknown}" = "unknown" ]; then _rt=null
+  else _rt=$(printf '%s' "${9}" | tr -cd '0-9'); [ -n "$_rt" ] || _rt=null; fi
+  printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"reasoning_tokens":%s,"tokens_partial":%s,"status":"%s","ts":"%s"}\n' \
+    "$_b" "$_m" "$_p" "$_l" "$_pt" "$_ct" "$_rt" "$_pa" "$_st" "$_ts" \
     >> "$_STATE_DIR/analytics/outside-voice.jsonl" 2>/dev/null || true
 }
 
@@ -586,7 +589,7 @@ exec_openrouter() {
   # file, and the round was still billed upstream. Two timed-out rounds on this branch logged
   # `in=0 out=0` for requests OpenRouter had already charged for. 0 there does not mean cheap,
   # it means unmeasured, and this log feeds a cheap-vs-frontier cost comparison.
-  local ptok=unknown ctok=unknown rmodel="$model" rpartial=false
+  local ptok=unknown ctok=unknown rmodel="$model" rpartial=false rreason=unknown
   if [ -s "$resp_file" ]; then
     # JSON null (usage absent from the API response) prints as None; map it back to the
     # `unknown` sentinel rather than letting `tr -cd '0-9'` silently flatten it to 0.
@@ -601,14 +604,17 @@ print("unknown" if v is None else v)' "$resp_file" 2>/dev/null || echo unknown)
     # deleted seconds later is the same failure as printing a caveat to a stderr nobody reads:
     # the number survives and the reason it might be wrong does not.
     rpartial=$(python3 -c 'import json,sys;print("true" if json.load(open(sys.argv[1])).get("tokens_partial") else "false")' "$resp_file" 2>/dev/null || echo false)
+    rreason=$(python3 -c 'import json,sys
+v=json.load(open(sys.argv[1])).get("reasoning_tokens")
+print("unknown" if v is None else v)' "$resp_file" 2>/dev/null || echo unknown)
   fi
 
   if [ "$rc" -eq 124 ]; then
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout "$rpartial"
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout "$rpartial" "$rreason"
   elif [ "$rc" -ne 0 ]; then
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" "error_$rc" "$rpartial"
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" "error_$rc" "$rpartial" "$rreason"
   else
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" ok "$rpartial"
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" ok "$rpartial" "$rreason"
   fi
 
   rm -f "$resp_file" ${diff_file:+"$diff_file"}
