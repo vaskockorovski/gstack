@@ -1077,11 +1077,20 @@ and a review that exhausts it emits nothing at all and still bills in full. Spen
 budget on finding defects, not on describing them at length.
 PROMPT
 _OV_FINDINGS=$(mktemp "$TMP_ROOT/gstack-ov-findings-XXXXXX.json")
-~/.claude/skills/gstack/bin/gstack-outside-voice exec \
-  --phase loop --prompt-file "$_LOOP_PROMPT" --repo-root "$_REPO_ROOT" \
+# BACKGROUNDED, not inline. 900s exceeds the host shell's own cap, so an inline call is
+# killed by the harness while the model is still generating — which bills the round and
+# returns nothing. Saying so in prose is not enough: this skill already learned, over four
+# rounds, that a step written beside a code block instead of inside it does not get run.
+_OV_DONE=$(mktemp "$TMP_ROOT/gstack-ov-done-XXXXXX")
+nohup bash -c '~/.claude/skills/gstack/bin/gstack-outside-voice exec \
+  --phase loop --prompt-file "'"$_LOOP_PROMPT"'" --repo-root "'"$_REPO_ROOT"'" \
   --base "origin/<base>" --effort medium --timeout 900 \
-  --findings-out "$_OV_FINDINGS" < /dev/null 2>"$TMPERR"
-_OV_EXIT=$?
+  --findings-out "'"$_OV_FINDINGS"'" < /dev/null 2>"'"$TMPERR"'"
+echo $? > "'"$_OV_DONE"'"' > /dev/null 2>&1 &
+# Poll the marker rather than waiting inline, so the host cap never sees a long call.
+for _i in $(seq 1 180); do [ -s "$_OV_DONE" ] && break; sleep 10; done
+_OV_EXIT=$(cat "$_OV_DONE" 2>/dev/null || echo 124)
+rm -f "$_OV_DONE"
 rm -f "$_LOOP_PROMPT"
 if [ "$_OV_EXIT" = "124" ]; then
   # Named for the BACKEND that actually timed out. `codex_timeout` on an openrouter round is

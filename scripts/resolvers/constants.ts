@@ -146,7 +146,13 @@ export function outsideVoicePreflight(opts: {
   const m = opts.modeVar ?? '_CODEX_MODE';
   const disabledLine = opts.disabledBehavior === 'codex-only'
     ? 'Skip the outside-voice passes only; the Claude adversarial subagent below STILL runs (it is free and fast). Print: "Outside-voice passes skipped (disabled) — running Claude adversarial only."'
-    : 'Skip this section entirely; do NOT fall back to a Claude subagent — disabled means no extra review step. Print: "Outside-voice review skipped (disabled). Re-enable: `gstack-config set codex_reviews enabled`."';
+    // `disabled` arrives from TWO switches — the master `codex_reviews` and this phase's own
+    // `outside_voice_*` — and probe cannot distinguish them, by design. Naming only the master
+    // sends a user whose PHASE is off to flip a key that changes nothing, and leaves them
+    // believing the feature is broken rather than configured. Reported in round 7 of this
+    // build and misfiled as a false positive, because the search was scoped to codex/SKILL.md
+    // while the text lives here.
+    : `Skip this section entirely; do NOT fall back to a Claude subagent — disabled means no extra review step. Print: "Outside-voice review skipped (disabled). Two switches produce this state: re-enable the master with \`gstack-config set codex_reviews enabled\`, or this phase with \`gstack-config set outside_voice_${opts.phase === 'loop' ? 'loop' : 'gate'} codex\`."`;
   return `\`\`\`bash
 # Outside-voice preflight for the "${opts.phase}" phase: one block (functions sourced here don't persist).
 _TEL=$(~/.claude/skills/gstack/bin/gstack-config get telemetry 2>/dev/null || echo off)
