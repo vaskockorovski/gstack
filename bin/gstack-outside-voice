@@ -177,6 +177,13 @@ probe() {
   # openrouter is a misconfiguration, and must never quietly bill the frontier
   # backend instead. The caller decides what to do; we only refuse to guess.
   [ -z "$_ork" ] && { echo "not_authed"; return 0; }
+  # And reject a key the REQUEST side will reject. It refuses any whitespace — a header value
+  # cannot carry one, and a newline makes http.client treat it as injection — while this probe
+  # stripped whitespace before testing for emptiness. A key copied with a trailing newline
+  # therefore reported `ready`, callers took the runnable path on that word, and every review
+  # then failed at request time. Third time the two sides have disagreed about what "usable"
+  # means; the probe is what callers branch on, so it has to enforce what exec enforces.
+  [ "${OPENROUTER_API_KEY:-}" != "$_ork" ] && { echo "not_authed"; return 0; }
   # The model too. exec_openrouter refuses an unusable model id at runtime, so without this a
   # caller saw `ready`, took the outside-voice path on the strength of it, and hit exit 2
   # before any review ran. The generated skill instructions branch on probe FIRST, which makes
