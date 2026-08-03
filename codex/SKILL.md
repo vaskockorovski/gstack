@@ -1006,10 +1006,28 @@ loop round or quietly weakens the gate.
 # regardless, the call fails, and the failure is reported as a codex error rather than as the
 # configuration problem the probe already identified. The loop path guards at runtime; this one
 # relied on the reader doing it, and two review rounds reported it as a defect for that reason.
+_GATE_RAN=no
 if [ "$_GATE_MODE" != "ready" ]; then
-  echo "GATE NOT RUN — outside voice is '$_GATE_MODE' for the final_gate phase. This is NOT a clean gate; nothing was reviewed. Fall back to the Claude subagent path."
-  return 0 2>/dev/null || exit 0
+  # NOT `exit 0`. Exiting zero is the shell's word for "this succeeded", and a caller that
+  # reads it cannot distinguish "the gate found nothing" from "the gate never ran" — the same
+  # absence-read-as-a-verdict this skill has closed in four other places. Set a flag the
+  # invocation below checks, and say which key to fix rather than only which state was seen.
+  _GATE_KEY=outside_voice_gate
+  case "$_GATE_MODE" in
+    misconfigured) echo "GATE NOT RUN — \`$_GATE_KEY\` holds an unrecognised value. Fix it: gstack-config set $_GATE_KEY <codex|openrouter|disabled>. NOT a clean gate; nothing was reviewed." ;;
+    disabled)      echo "GATE NOT RUN — outside-voice review is off for this phase. Two switches produce it: \`codex_reviews\` and \`$_GATE_KEY\`. NOT a clean gate; nothing was reviewed." ;;
+    not_authed)    echo "GATE NOT RUN — the configured gate backend has no credentials. NOT a clean gate; nothing was reviewed." ;;
+    *)             echo "GATE NOT RUN — outside voice is '$_GATE_MODE' for the final_gate phase. NOT a clean gate; nothing was reviewed." ;;
+  esac
+  echo "Fall back to the Claude subagent path."
+else
+  _GATE_RAN=yes
 fi
+# Guarded, because the readiness check above no longer exits — exiting 0 there would have
+# told the caller the gate SUCCEEDED when it never ran.
+if [ "$_GATE_RAN" != "yes" ]; then
+  echo "Skipping the gate invocation: $_GATE_MODE."
+else
 _REPO_ROOT=$(git rev-parse --show-toplevel) || { echo "ERROR: not in a git repo" >&2; exit 1; }
 _GATE_PROMPT=$(mktemp "$TMP_ROOT/gstack-gate-prompt-XXXXXX.txt")
 cat > "$_GATE_PROMPT" <<'PROMPT'
@@ -1051,6 +1069,7 @@ elif [ "$_CODEX_EXIT" != "0" ]; then
   echo "[codex exit $_CODEX_EXIT] $(head -1 "$TMPERR" 2>/dev/null || echo "no stderr captured")"
   head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
   _gstack_codex_log_event "codex_nonzero_exit" "review:$_CODEX_EXIT"
+fi
 fi
 ```
 
@@ -1096,8 +1115,16 @@ nohup bash -c '~/.claude/skills/gstack/bin/gstack-outside-voice exec \
 echo $? > "'"$_OV_DONE"'"' > /dev/null 2>&1 &
 # Poll the marker rather than waiting inline, so the host cap never sees a long call.
 for _i in $(seq 1 180); do [ -s "$_OV_DONE" ] && break; sleep 10; done
-_OV_EXIT=$(cat "$_OV_DONE" 2>/dev/null || echo 124)
-rm -f "$_OV_DONE"
+if [ -s "$_OV_DONE" ]; then
+  _OV_EXIT=$(cat "$_OV_DONE")
+  rm -f "$_OV_DONE"
+else
+  # The poll expired; the round may STILL BE RUNNING. Reporting 124 here would claim a timeout
+  # that has not happened, and deleting the findings file would race a writer that is about to
+  # produce it. Neither the exit code nor the file is ours to touch yet.
+  _OV_EXIT=125
+  echo "ROUND STATE UNKNOWN — the review did not finish within the 30-minute poll and may still be running. This is NOT a clean round and NOT a timeout; nothing has been established. The findings file is left in place for the running call."
+fi
 rm -f "$_LOOP_PROMPT"
 if [ "$_OV_EXIT" = "124" ]; then
   # Named for the BACKEND that actually timed out. `codex_timeout` on an openrouter round is
@@ -1142,10 +1169,14 @@ if [ "$_OV_EXIT" = "0" ] && [ -s "$_OV_FINDINGS" ]; then
   echo "OV_FINDINGS_JSON: $(cat "$_OV_FINDINGS")"
 elif [ "$_OV_EXIT" = "0" ]; then
   echo "OV_FINDINGS_JSON: <none — backend was codex; read its own output above for severities>"
+elif [ "$_OV_EXIT" = "125" ]; then
+  echo "OV_FINDINGS_JSON: <none yet — the round is still running; the file belongs to that call>"
 else
   echo "OV_FINDINGS_JSON: <none — the round FAILED (exit $_OV_EXIT). NOT a clean round; nothing was established>"
 fi
-rm -f "$_OV_FINDINGS"
+# Not on 125: a still-running call is about to write this file, and deleting it would race
+# the writer and destroy the round's only machine-readable result.
+[ "$_OV_EXIT" = "125" ] || rm -f "$_OV_FINDINGS"
 ```
 
 **If `$_OV_FINDINGS` does not exist after a successful run, the backend was `codex`** — it owns

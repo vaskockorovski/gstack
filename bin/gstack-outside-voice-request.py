@@ -93,7 +93,14 @@ if findings_path:
         sys.exit(2)
 
 if diff_path:
-    diff = open(diff_path, encoding="utf-8", errors="replace").read()
+    try:
+        diff = open(diff_path, encoding="utf-8", errors="replace").read()
+    except OSError as e:
+        # Same contract as the prompt file: the shell always creates this, so it fires only on
+        # direct invocation — where a bare traceback names Python's open() rather than the
+        # input that was wrong.
+        sys.stderr.write("cannot read the diff file %r: %s\n" % (diff_path, e))
+        sys.exit(2)
     note = ""
     if truncated:
         # Never a silent cap: the model is told, and so is the reader (stderr, caller side).
