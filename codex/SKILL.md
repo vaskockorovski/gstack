@@ -956,6 +956,12 @@ if [ -n "$_OV_PHASE" ] && [ "$_OV_PHASE" != "none" ]; then
   [ "$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase "$_OV_PHASE" 2>/dev/null)" = "codex" ] \
     && _NEEDS_CODEX=yes || _NEEDS_CODEX=no
 fi
+# Fail-closed and fail-LOUD are different properties, and this line only had the first.
+# Leaving _OV_PHASE unset falls back to requiring Codex, which is the SAFE direction — but
+# "deliberately requiring Codex" and "the phase line was never filled in" then looked
+# identical, so on a hosted-only machine the feature just seemed not to work. Three review
+# rounds have now read this block as dead code for the same reason. Say which one it is.
+[ -z "$_OV_PHASE" ] && echo "WARNING: _OV_PHASE was never set, so this falls back to REQUIRING Codex (the pre-adapter behaviour). If this machine runs a hosted backend, that is wrong and the review is about to stop for a Codex it never needed — go back to Step 0.3, set the phase, and re-run this block."
 echo "NEEDS_CODEX: $_NEEDS_CODEX"
 CODEX_BIN=$(command -v codex || echo "")
 [ -z "$CODEX_BIN" ] && echo "NOT_FOUND" || echo "FOUND: $CODEX_BIN"
@@ -1115,6 +1121,7 @@ PROMPT
 # LOOP invocation and left these two — the same first-site-vs-sibling miss this run keeps
 # making, so all THREE adapter call sites are now enumerated and carry a resolved effort.
 _REVIEW_EFFORT=high
+echo "REVIEW_EFFORT: $_REVIEW_EFFORT"   # printed so a --xhigh the agent forgot to apply is visible
 ~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
   --phase final_gate --codex-mode review \
   --prompt-file "$_GATE_PROMPT" --repo-root "$_REPO_ROOT" \
@@ -1239,6 +1246,7 @@ _OV_OUT="$TMP_ROOT/gstack-ov-out-$_OV_LANE.txt"
 # the user typed and the skill documents, dropped without a word, is worse than not offering it.
 # SET THIS LINE: `xhigh` if the user passed --xhigh, otherwise `medium`.
 _OV_EFFORT=medium
+echo "LOOP_EFFORT: $_OV_EFFORT"   # printed so a --xhigh the agent forgot to apply is visible
 # Recover a DEAD round before deciding whether to relaunch. The launch marker is deliberately
 # kept on exit 125 (a round still running must be polled, not duplicated), but 125's own message
 # tells the operator to find and kill an orphaned uncapped call — and after they do, the marker
@@ -1465,6 +1473,7 @@ _FOCUS_FINDINGS=$(mktemp "$TMP_ROOT/gstack-focus-findings-XXXXXX.json")
 # LOOP invocation and left these two — the same first-site-vs-sibling miss this run keeps
 # making, so all THREE adapter call sites are now enumerated and carry a resolved effort.
 _REVIEW_EFFORT=high
+echo "REVIEW_EFFORT: $_REVIEW_EFFORT"   # printed so a --xhigh the agent forgot to apply is visible
 ~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
   --phase final_gate --codex-mode exec \
   --prompt-file "$_PROMPT_FILE" --repo-root "$_REPO_ROOT" \

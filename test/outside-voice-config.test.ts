@@ -576,6 +576,55 @@ describe('every adapter invocation carries a resolved effort, not a literal', ()
   });
 });
 
+// `list` used to re-parse config.yaml itself instead of asking `get`, and the two readers
+// disagreed exactly where it mattered: a blank `outside_voice_loop:` printed `codex (default)`
+// as though unset, and `outside_voice_loop_model: foo bar` printed `foo (set)` because awk takes
+// one field. Both are values `get` refuses and probe calls `misconfigured` — so the built-in
+// diagnostic contradicted the tool it exists to explain, at the moment someone ran it to find
+// out why their backend would not start.
+describe('gstack-config list agrees with gstack-config get', () => {
+  // Both readings are taken EAGERLY, before the temp home is removed. Returning a lazy `get`
+  // closure meant it ran after the cleanup and read a config that no longer existed, so it
+  // returned "" and the tests failed against the code being correct — a fixture measuring its
+  // own teardown rather than the tool.
+  function withConfig(yaml: string, keys: string[] = []): { list: string; values: Record<string, string> } {
+    const home = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-list-'));
+    fs.mkdirSync(path.join(home, '.gstack'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.gstack', 'config.yaml'), yaml);
+    const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: '' } as Record<string, string>;
+    const list = spawnSync('bash', [CONFIG, 'list'], { env, encoding: 'utf-8' }).stdout || '';
+    const values: Record<string, string> = {};
+    for (const k of keys) {
+      values[k] = (spawnSync('bash', [CONFIG, 'get', k], { env, encoding: 'utf-8' }).stdout || '').trim();
+    }
+    fs.rmSync(home, { recursive: true, force: true });
+    return { list, values };
+  }
+
+  test('a blank value is reported as invalid, not as the default', () => {
+    const { list, values } = withConfig('outside_voice_loop:\n', ['outside_voice_loop']);
+    expect(values.outside_voice_loop).toBe('__blank__');
+    expect(list).toMatch(/outside_voice_loop:\s+INVALID/);
+    expect(list).not.toMatch(/outside_voice_loop:\s+codex \(default\)/);
+  });
+
+  test('a whitespace-bearing model id is not truncated into a plausible one', () => {
+    const { list, values } = withConfig('outside_voice_loop_model: foo bar\n', ['outside_voice_loop_model']);
+    expect(values.outside_voice_loop_model).toBe('__blank__');
+    expect(list).toMatch(/outside_voice_loop_model:\s+INVALID/);
+    expect(list).not.toMatch(/outside_voice_loop_model:\s+foo \(set\)/);
+  });
+
+  // The negative case: hardening must not make healthy configs read as broken.
+  test('valid values and genuine defaults still read normally', () => {
+    const { list } = withConfig('outside_voice_loop: openrouter\noutside_voice_loop_model: minimax/minimax-m3\n');
+    expect(list).toMatch(/outside_voice_loop:\s+openrouter \(set\)/);
+    expect(list).toMatch(/outside_voice_loop_model:\s+minimax\/minimax-m3 \(set\)/);
+    expect(list).toMatch(/outside_voice_gate:\s+codex \(default\)/);
+    expect(list).not.toMatch(/INVALID/);
+  });
+});
+
 describe('the retry prompt cannot feed a live fence back to the model', () => {
   const REQUEST = path.join(ROOT, 'bin', 'gstack-outside-voice-request.py');
 

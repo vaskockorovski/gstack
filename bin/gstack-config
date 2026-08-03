@@ -444,12 +444,24 @@ case "${1:-}" in
                codex_reviews gstack_contributor skip_eng_review workspace_root \
                artifacts_sync_mode artifacts_sync_mode_prompted plan_tune_hooks \
                outside_voice_loop outside_voice_gate outside_voice_loop_model; do
-      VALUE=$(grep -E "^${KEY}:" "$CONFIG_FILE" 2>/dev/null | tail -1 | awk '{print $2}' | tr -d '[:space:]' || true)
-      SOURCE="default"
-      if [ -n "$VALUE" ]; then
+      # Ask `get`, do not re-parse. This loop used to run its own
+      # `grep | awk '{print $2}' | tr -d [:space:]`, which is a SECOND reader of the same file
+      # and disagreed with the first exactly where it mattered most: a blank
+      # `outside_voice_loop:` printed `codex (default)` as though the key were unset, and
+      # `outside_voice_loop_model: foo bar` printed `foo (set)` — awk takes one field, so an
+      # invalid two-token value was silently truncated into a plausible-looking one.
+      #
+      # Both are values `get` refuses and probe reports as `misconfigured`. So the built-in
+      # diagnostic contradicted the tool it exists to explain, and did it precisely when someone
+      # was running `list` to find out why their backend would not start. Hardening `get` alone
+      # moved the silence here rather than removing it.
+      VALUE=$("$0" get "$KEY" 2>/dev/null || true)
+      if grep -qE "^${KEY}:" "$CONFIG_FILE" 2>/dev/null; then SOURCE="set"; else SOURCE="default"; fi
+      # `get`'s sentinel for "present but unusable". Name it, rather than rendering the sentinel
+      # or, worse, a value the key does not have.
+      if [ "$VALUE" = "__blank__" ]; then
+        VALUE="INVALID — blank, or contains whitespace"
         SOURCE="set"
-      else
-        VALUE=$(lookup_default "$KEY")
       fi
       printf '  %-24s %s (%s)\n' "$KEY:" "$VALUE" "$SOURCE"
     done
