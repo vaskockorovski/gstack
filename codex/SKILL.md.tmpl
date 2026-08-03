@@ -56,9 +56,19 @@ assumptions, catches things you might miss. Present its output faithfully, not s
 # with no Codex, even though that round runs entirely through the hosted backend. Too coarse
 # in the other direction too: the default gate path was blocked by a hosted LOOP setting.
 # `<phase>` is `loop` when the user passed --loop, `final_gate` otherwise.
+# SET THIS LINE before running the block: `loop` if the user typed `/codex review --loop`,
+# `final_gate` for a default or focused review, and `none` for challenge/consult/plan modes,
+# which call codex directly and must keep their gating.
+#
+# An earlier version wrote `if [ "<mode>" = "review" ]` here. Placeholders like <base> are
+# substituted by the agent when it writes a prompt, but a placeholder inside a CONDITIONAL
+# that the agent runs verbatim just compares two literals — the branch was always false, so
+# the bypass never fired and the feature stayed unreachable on the machines it was added for.
+# A placeholder that fails silently in a test is worse than one that fails loudly in a string.
+_OV_PHASE=final_gate    # ← loop | final_gate | none
 _NEEDS_CODEX=yes
-if [ "<mode>" = "review" ]; then
-  [ "$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase <phase> 2>/dev/null)" = "codex" ] \
+if [ "$_OV_PHASE" != "none" ]; then
+  [ "$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase "$_OV_PHASE" 2>/dev/null)" = "codex" ] \
     && _NEEDS_CODEX=yes || _NEEDS_CODEX=no
 fi
 echo "NEEDS_CODEX: $_NEEDS_CODEX"
@@ -593,6 +603,7 @@ fi
 # Printed under the SAME label the default gate uses, so step 4's rule — prefer the validated
 # block, fall back to markers only when none was printed and the exit was 0 — covers this path
 # too, with no second rule to keep in step.
+echo "GATE_BACKEND: $(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase final_gate 2>/dev/null || echo unknown)"
 if [ "$_CODEX_EXIT" = "0" ] && [ -s "$_FOCUS_FINDINGS" ]; then
   echo "GATE_FINDINGS_JSON: $(cat "$_FOCUS_FINDINGS")"
 fi
