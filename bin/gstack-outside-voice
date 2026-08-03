@@ -129,6 +129,9 @@ resolve_backend() {
   # quietly costs 20x is not, and it is the loop's entire reason for existing.
   case "$backend" in
     codex|openrouter|disabled) printf '%s' "$backend" ;;
+    # ABSENT — the unconfigured install, which must behave exactly as it did before this
+    # adapter existed. A key written with no value is a different fact and arrives as
+    # __blank__ from gstack-config: someone meant to set this and did not finish.
     "") printf 'codex' ;;
     *) printf 'misconfigured' ;;
   esac
@@ -564,7 +567,19 @@ exec_openrouter() {
     # warning exists to prevent, arriving through a door the truncation check cannot see:
     # the file is not oversized, it is wrong.
     if ! git -C "$repo_root" rev-parse --verify --quiet "$base" >/dev/null 2>&1; then
-      die "base ref '$base' does not resolve in $repo_root. Fetch it (git fetch <remote>) or pass --base. Refusing to review a different diff than the one asked for."
+      # One narrow fallback: origin/X -> X. A fork worktree, a shallow clone, or a repo that
+      # simply has not fetched the remote all fail the first check while holding a perfectly
+      # good LOCAL branch of the same name — and refusing there made `--loop` unusable on them.
+      # This is NOT the fallback that was removed earlier: that one dropped to `git diff HEAD`,
+      # silently swapping "review this branch" for "review my uncommitted edits". Branch-to-
+      # branch stays branch-to-branch, and the substitution is announced rather than assumed.
+      _local_base="${base#origin/}"
+      if [ "$_local_base" != "$base" ] && git -C "$repo_root" rev-parse --verify --quiet "$_local_base" >/dev/null 2>&1; then
+        echo "gstack-outside-voice: note — '$base' does not resolve; using the local branch '$_local_base' instead. Fetch the remote if you meant to review against it." >&2
+        base="$_local_base"
+      else
+        die "base ref '$base' does not resolve in $repo_root, and no local '${base#origin/}' exists either. Fetch it (git fetch <remote>) or pass --base. Refusing to review a different diff than the one asked for."
+      fi
     fi
     if ! git -C "$repo_root" diff "$base"...HEAD ${pathspecs[@]+-- "${pathspecs[@]}"} > "$diff_file" 2>/dev/null; then
       die "could not compute 'git diff $base...HEAD${pathspecs[@]+ -- ${pathspecs[*]}}' in $repo_root. Refusing to substitute a different diff."

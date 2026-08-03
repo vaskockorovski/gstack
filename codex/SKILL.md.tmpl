@@ -239,6 +239,7 @@ PROMPT
 ~/.claude/skills/gstack/bin/gstack-outside-voice exec \
   --phase final_gate --codex-mode review \
   --prompt-file "$_GATE_PROMPT" --repo-root "$_REPO_ROOT" \
+  --base "origin/<base>" \
   --effort high --timeout 330 --findings-out "$_GATE_FINDINGS" < /dev/null 2>"$TMPERR"
 _CODEX_EXIT=$?
 rm -f "$_GATE_PROMPT"
@@ -484,6 +485,16 @@ grep "tokens used" "$TMPERR" 2>/dev/null || echo "tokens: unknown"
 ```
 
 4. Determine gate verdict by checking the review output for critical findings.
+   **If a `GATE_FINDINGS_JSON:` line was printed, the verdict comes from it and from
+   nothing else**: `p1 > 0` is **FAIL**, `p1 == 0` is **PASS**. The block is validated —
+   its counts must agree with its own findings array — and it exists precisely so a hosted
+   backend does not have to preserve literal `[P1]` markers. Grepping the prose when the
+   block is present recreates the false-clean outcome the block was added to prevent: a
+   response reporting `p1: 2` in JSON while writing "P1:" or "Critical" in prose reads as
+   a PASS. Producer and consumer must agree, and the block is the producer's contract.
+
+   Only when NO block was printed — the codex backend ran, and owns its own output format —
+   fall back to the markers:
    If the output contains `[P1]` — the gate is **FAIL**.
    If no `[P1]` markers are found (only `[P2]` or no findings) — the gate is **PASS**.
 

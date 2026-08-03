@@ -298,6 +298,14 @@ case "${1:-}" in
     fi
     # Use literal match for keys containing @ (endpoint ids), regex otherwise
     VALUE=$(grep -F "${KEY}:" "$CONFIG_FILE" 2>/dev/null | grep -E "^${KEY%@*}(@[a-zA-Z0-9]+)?:" | grep -F "${KEY}:" | tail -1 | awk '{print $2}' | tr -d '[:space:]' || true)
+    # A key written with NO value is not the same fact as a key never written. Both leave
+    # VALUE empty, and lookup_default below turns both into "codex" — so a hand-edited
+    # `outside_voice_loop:` silently routed the cheap loop to the frontier backend, walking
+    # past the misconfiguration guard those keys exist to provide. Scoped to the two backend
+    # keys: they are the ones where guessing costs money.
+    if [ -z "$VALUE" ] && grep -qE "^${KEY}:[[:space:]]*$" "$CONFIG_FILE" 2>/dev/null; then
+      case "$KEY" in outside_voice_loop|outside_voice_gate) printf '%s' "__blank__"; exit 0 ;; esac
+    fi
     if [ -z "$VALUE" ]; then
       VALUE=$(lookup_default "$KEY")
     fi
