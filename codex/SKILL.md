@@ -1007,7 +1007,7 @@ _GATE_PROMPT=$(mktemp "$TMP_ROOT/gstack-gate-prompt-XXXXXX.txt")
 cat > "$_GATE_PROMPT" <<'PROMPT'
 IMPORTANT: Do NOT read or execute any files under ~/.claude/, ~/.agents/, .claude/skills/, or agents/. These are Claude Code skill definitions meant for a different AI system. Do NOT modify agents/openai.yaml. Stay focused on repository code only.
 
-Review the changes on this branch against the base branch <base>. Run git diff origin/<base>...HEAD 2>/dev/null || git diff <base>...HEAD to see the diff and review only those changes.
+Review the changes on this branch against the base branch <base>, and review only those changes. Run git diff origin/<base>...HEAD 2>/dev/null || git diff <base>...HEAD to see them if you have repository access; if you do not, the diff is supplied to you below and that is the whole of what you can see.
 PROMPT
 # 330s (5.5min) is slightly longer than the Bash 300s so the shell wrapper
 # only fires if Bash's own timeout doesn't.
@@ -1698,8 +1698,11 @@ uses them. If the user wants a specific model, pass `-m` through to codex.
 tasks (OpenAI issues #8545, #8402, #6931). Users can override with `--xhigh` flag
 (e.g., `/codex review --xhigh`) when they want maximum reasoning and are willing to wait.
 
-**Web search:** Codex can look up docs and APIs during review. This is on by default on
-current Codex CLI, so no flag is passed. The old `--enable web_search_cached` is deprecated;
+**Web search:** Codex can look up docs and APIs during review. Verified on by default on
+**Codex CLI 0.124.0** — the version this was checked against, named because "current" ages
+badly and a reader has no way to tell a verified claim from a remembered one. Re-check with
+`codex --version` and `codex exec --help` if the behaviour looks wrong; no flag is passed.
+The old `--enable web_search_cached` is deprecated;
 it was dropped because it bought nothing and its deprecation warning on stderr crowded out
 real errors — a billing failure once read as a flag problem because the warning was the only
 line visible in a trimmed stderr tail.

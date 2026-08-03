@@ -60,6 +60,12 @@ if findings_path:
         os.unlink(findings_path)
     except FileNotFoundError:
         pass
+    except OSError as e:
+        # A directory, a read-only mount, a path whose parent does not exist — each raised a
+        # bare traceback that named Python internals rather than the flag the caller passed.
+        # The round fails either way; the difference is whether the operator can see why.
+        sys.stderr.write("cannot use --findings-out %r: %s\n" % (findings_path, e))
+        sys.exit(2)
 
 if diff_path:
     diff = open(diff_path, encoding="utf-8", errors="replace").read()
@@ -567,6 +573,12 @@ if findings_path:
         # means in practice.
         payload2 = ask(retry, lambda: write_usage(p_tok, c_tok, served, False, r_tok))
         usage2 = payload2.get("usage") or {}
+        # The retry's reasoning counts too. Added in the same round that introduced reasoning
+        # capture and missed here — the fifth time this run that a change landed on the first
+        # call's path and not the retry's. The retry is a real billed call; leaving its
+        # reasoning out understates precisely the number that decides whether the cheap tier
+        # fits a given diff size.
+        r_tok = add_toks(r_tok, reasoning_toks(usage2))
         _p2, _c2 = toks(usage2, "prompt_tokens"), toks(usage2, "completion_tokens")
         PARTIAL = toks_partial(p_tok, _p2) or toks_partial(c_tok, _c2)
         p_tok = add_toks(p_tok, _p2)
