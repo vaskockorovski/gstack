@@ -65,9 +65,14 @@ assumptions, catches things you might miss. Present its output faithfully, not s
 # that the agent runs verbatim just compares two literals — the branch was always false, so
 # the bypass never fired and the feature stayed unreachable on the machines it was added for.
 # A placeholder that fails silently in a test is worse than one that fails loudly in a string.
-_OV_PHASE=final_gate    # ← loop | final_gate | none
+_OV_PHASE=              # ← REQUIRED: loop | final_gate | none
+# Unset stays `yes`, so forgetting to set it fails the SAFE way — the pre-adapter behaviour
+# of requiring Codex — rather than skipping checks a mode still needs. An earlier version
+# defaulted to `final_gate`, which was wrong in both directions at once: `review --loop`
+# checked the GATE's backend, and challenge/consult skipped their checks whenever the gate
+# happened to be hosted, though they call codex exec directly further down this file.
 _NEEDS_CODEX=yes
-if [ "$_OV_PHASE" != "none" ]; then
+if [ -n "$_OV_PHASE" ] && [ "$_OV_PHASE" != "none" ]; then
   [ "$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase "$_OV_PHASE" 2>/dev/null)" = "codex" ] \
     && _NEEDS_CODEX=yes || _NEEDS_CODEX=no
 fi
@@ -270,7 +275,7 @@ Label each finding with a literal marker [P1] (critical), [P2] (advisory) or [P3
 PROMPT
 # 330s (5.5min) is slightly longer than the Bash 300s so the shell wrapper
 # only fires if Bash's own timeout doesn't.
-~/.claude/skills/gstack/bin/gstack-outside-voice exec \
+~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
   --phase final_gate --codex-mode review \
   --prompt-file "$_GATE_PROMPT" --repo-root "$_REPO_ROOT" \
   --base "origin/<base>" \
@@ -362,6 +367,12 @@ PROMPT
 # unset it would have; interpolated empty, it just quietly shares a path.
 _OV_LANE=$(printf '%s|%s' "$(git rev-parse --show-toplevel 2>/dev/null)" "$(git branch --show-current 2>/dev/null)" | cksum | tr -d ' \t' )
 _OV_FINDINGS="$TMP_ROOT/gstack-ov-findings-$_OV_LANE.json"
+# TMPERR is lane-scoped for the loop too. Step 2A creates a fresh TMPERR on every entry, so a
+# RE-POLL of a still-running round pointed the warning checks at a new empty file while the
+# background child kept appending to the one it was launched with — dropping exactly the
+# truncation and degraded-backend warnings this path re-polls to collect, and orphaning the
+# original. Re-runnability made every per-invocation tempfile a bug; this was the one left.
+TMPERR="$TMP_ROOT/gstack-ov-err-$_OV_LANE.txt"
 # BACKGROUNDED, not inline. 900s exceeds the host shell's own cap, so an inline call is
 # killed by the harness while the model is still generating — which bills the round and
 # returns nothing. Saying so in prose is not enough: this skill already learned, over four
@@ -383,7 +394,7 @@ _OV_LAUNCHED="$TMP_ROOT/gstack-ov-launched-$_OV_LANE"
 _OV_OUT="$TMP_ROOT/gstack-ov-out-$_OV_LANE.txt"
 if [ ! -f "$_OV_LAUNCHED" ]; then
 touch "$_OV_LAUNCHED"
-nohup bash -c '~/.claude/skills/gstack/bin/gstack-outside-voice exec \
+nohup bash -c '~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
   --phase loop --prompt-file "'"$_LOOP_PROMPT"'" --repo-root "'"$_REPO_ROOT"'" \
   --base "origin/<base>" --effort medium --timeout 900 \
   --findings-out "'"$_OV_FINDINGS"'" < /dev/null 2>"'"$TMPERR"'"
@@ -573,7 +584,7 @@ _PROMPT_FILE=$(mktemp "$TMP_ROOT/codex-prompt-XXXXXX.txt")
 # prompt now carries the same dual-backend wording the gate uses: run git diff if you can,
 # otherwise the diff is below.
 _FOCUS_FINDINGS=$(mktemp "$TMP_ROOT/gstack-focus-findings-XXXXXX.json")
-~/.claude/skills/gstack/bin/gstack-outside-voice exec \
+~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
   --phase final_gate --codex-mode exec \
   --prompt-file "$_PROMPT_FILE" --repo-root "$_REPO_ROOT" \
   --base "origin/<base>" \

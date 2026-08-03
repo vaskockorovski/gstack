@@ -34,6 +34,10 @@
 #                           still bills in full. The trade is real and must be recorded — a
 #                           defect spanning two scopes is invisible to both, and is ceded to
 #                           the repo-scoped gate by construction.
+#   --explicit              the user invoked this review BY NAME. `codex_reviews=disabled`
+#                           governs the automatic passes in /review, /ship and plan reviews;
+#                           it must not silently disable a review someone asked for. The
+#                           per-phase outside_voice_* switches still apply.
 #   --findings-out <file>   require a VALIDATED findings block and write it here as JSON
 #                           {p1,p2,p3,findings[],counts_disagreed}. Severity counts must come
 #                           from this file, never from parsing the prose. Not available on the
@@ -366,7 +370,7 @@ GATE
 cmd_exec() {
   local phase="" prompt_file="" repo_root="" effort="high" repo_context="diff"
   local base="origin/main" timeout_s="330" label="" findings_out="" codex_mode="exec"
-  local pathspecs=()
+  local pathspecs=() explicit=no
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -380,6 +384,7 @@ cmd_exec() {
       --label)        label="${2:?}"; shift 2 ;;
       --findings-out) findings_out="${2:?}"; shift 2 ;;
       --pathspec)     pathspecs+=("${2:?--pathspec needs a value}"); shift 2 ;;
+      --explicit)     explicit=yes; shift ;;
       --codex-mode)   codex_mode="${2:?}"; shift 2 ;;
       *) die "unknown option '$1'" ;;
     esac
@@ -423,7 +428,13 @@ cmd_exec() {
   # is a question with no consequences — and resolving it can now REFUSE (a typo'd value, an
   # erroring config helper), so a user who had switched the whole feature off was being handed
   # an error about a backend that was never going to be used. The off switch outranks it.
-  if [ "$(_cfg codex_reviews)" = "disabled" ]; then
+  # `codex_reviews` is documented in gstack-config as the switch for the AUTOMATIC cross-model
+  # passes in /review, /ship and the plan reviews. Routing every /codex review path through this
+  # adapter quietly extended it to cover an EXPLICIT `/codex review`, so a user who had turned
+  # the automatic passes off could no longer run one by name — a regression against both the
+  # previous direct-CLI behaviour and the config's own documented contract. --explicit says the
+  # user asked for this review by name; the master switch still governs everything else.
+  if [ "$explicit" != "yes" ] && [ "$(_cfg codex_reviews)" = "disabled" ]; then
     echo "OUTSIDE_VOICE_DISABLED codex_reviews=disabled" >&2
     return 3
   fi
