@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 
 const ROOT = path.resolve(import.meta.dir, '..');
 const ADAPTER = path.join(ROOT, 'bin', 'gstack-outside-voice');
@@ -54,7 +55,7 @@ describe('backend resolution refuses to guess', () => {
     // A hand-edited config is the case that matters: `gstack-config set` rejects an invalid
     // value, so the only way one reaches resolve_backend is by editing the file directly —
     // which the config header explicitly invites ("edit freely").
-    const home = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-ov-test-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-test-'));
     fs.mkdirSync(path.join(home, '.gstack'), { recursive: true });
     fs.writeFileSync(path.join(home, '.gstack', 'config.yaml'), `outside_voice_loop: ${value}\n`);
     const r = spawnSync('bash', [ADAPTER, 'backend', '--phase', 'loop'], {
@@ -79,7 +80,7 @@ describe('backend resolution refuses to guess', () => {
   });
 
   test('unset still resolves to codex, so an unconfigured install is unchanged', () => {
-    const home = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-ov-test-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-test-'));
     const r = spawnSync('bash', [ADAPTER, 'backend', '--phase', 'loop'], {
       env: { PATH: process.env.PATH, HOME: home, USERPROFILE: '' } as Record<string, string>,
       encoding: 'utf-8',
@@ -97,7 +98,7 @@ describe('the API key never travels across a redirect', () => {
   // raise instead, which is safety by accident. So the allowlist is worth exactly as much as
   // this refusal, and the refusal needs a test that actually performs the hop.
   test('a redirecting base URL is refused before the second request is made', () => {
-    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-ov-redir-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-redir-'));
     const marker = path.join(dir, 'leaked');
     fs.writeFileSync(
       path.join(dir, 'stub.py'),
@@ -163,7 +164,7 @@ describe('the findings fence tolerates what models actually emit', () => {
   // not recognised. A stricter fence buys nothing — the per-request NONCE is what authenticates
   // the block, not the absence of a trailing language hint.
   function parse(text: string): number | null {
-    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-ov-fence-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-fence-'));
     const src = fs.readFileSync(path.join(ROOT, 'bin', 'gstack-outside-voice-request.py'), 'utf-8');
     const reLine = src.split('\n').slice(src.split('\n').findIndex((l) => l.startsWith('BLOCK_RE = re.compile('))).slice(0, 3).join('\n');
     const script = path.join(dir, 'p.py');
@@ -231,7 +232,7 @@ describe('the usage log never reports an unknown cost as zero', () => {
   // to feed: a cost comparison between a cheap loop and a frontier gate comes out backwards if
   // every frontier row sums to nothing. null cannot be summed by accident.
   function emit(args: string): Record<string, unknown>[] {
-    const state = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-ov-log-'));
+    const state = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-log-'));
     const adapter = fs.readFileSync(ADAPTER, 'utf-8');
     const fn = adapter.slice(adapter.indexOf('log_usage() {'));
     const body = fn.slice(0, fn.indexOf('\n}\n') + 3);
@@ -295,7 +296,7 @@ describe('the base-url guard allowlists schemes rather than blocklisting http', 
   const REQUEST = path.join(ROOT, 'bin', 'gstack-outside-voice-request.py');
 
   function attempt(baseUrl: string): string {
-    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-ov-url-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-url-'));
     const prompt = path.join(dir, 'p.txt');
     fs.writeFileSync(prompt, 'review this\n');
     const r = spawnSync('python3', [REQUEST], {
@@ -362,7 +363,7 @@ describe('probe enforces the request layer base-url rule rather than a copy of i
   // the only variable — otherwise a `misconfigured` could come from the model or the key and
   // the test would agree for the wrong reason.
   function probeVerdict(baseUrl: string): string {
-    const home = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-ov-probe-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-probe-'));
     fs.mkdirSync(path.join(home, '.gstack'), { recursive: true });
     fs.writeFileSync(path.join(home, '.gstack', 'config.yaml'), 'outside_voice_loop: openrouter\n');
     const r = spawnSync('bash', [ADAPTER, 'probe', '--phase', 'loop'], {
@@ -470,7 +471,7 @@ describe('the hosted backend finds Python under either name, but only Python 3',
   }
 
   function resolvedWith(shims: Record<string, string>): string {
-    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-py-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-py-'));
     for (const [name, body] of Object.entries(shims)) {
       fs.writeFileSync(path.join(dir, name), body, { mode: 0o755 });
     }
@@ -588,7 +589,7 @@ describe('gstack-config list agrees with gstack-config get', () => {
   // returned "" and the tests failed against the code being correct — a fixture measuring its
   // own teardown rather than the tool.
   function withConfig(yaml: string, keys: string[] = []): { list: string; values: Record<string, string> } {
-    const home = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-list-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-list-'));
     fs.mkdirSync(path.join(home, '.gstack'), { recursive: true });
     fs.writeFileSync(path.join(home, '.gstack', 'config.yaml'), yaml);
     const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: '' } as Record<string, string>;
@@ -652,7 +653,7 @@ describe('probe refuses a redirecting base URL, without doing I/O on the default
   });
 
   test('a redirecting CUSTOM url is refused', () => {
-    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-redir-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-redir-'));
     fs.writeFileSync(path.join(dir, 'srv.py'), [
       'from http.server import BaseHTTPRequestHandler, HTTPServer',
       'class R(BaseHTTPRequestHandler):',
@@ -706,7 +707,7 @@ describe('an oversized prompt is refused, not truncated', () => {
   // reviewer might have commented on and says so, while truncating the prompt drops the
   // instructions — including the findings contract that decides how severities are reported.
   function exec(promptBytes: number): { status: number; err: string } {
-    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-prompt-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-prompt-'));
     const f = path.join(dir, 'p.txt');
     fs.writeFileSync(f, 'x'.repeat(promptBytes));
     const r = spawnSync('bash', [ADAPTER, 'exec', '--phase', 'loop', '--prompt-file', f, '--repo-root', ROOT],

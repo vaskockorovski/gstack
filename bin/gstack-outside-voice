@@ -131,7 +131,26 @@ _cfg() { "$_CONFIG" get "$1" 2>/dev/null || echo ""; }
 _cfg_strict() {
   local _v _rc=0
   _v="$("$_CONFIG" get "$1" 2>/dev/null)" || _rc=$?
-  [ "$_rc" -eq 0 ] || die "cannot read '$1' from configuration ($_CONFIG exited $_rc). Refusing to assume a backend — an unreadable config is not an unconfigured one, and guessing bills the frontier price for every loop round."
+  # RETURN a status; do not `die` here. Every caller reads this through `$( )`, and an `exit`
+  # inside a command substitution ends only the SUBSHELL — so the message printed, the
+  # substitution yielded empty, and the script carried on and billed anyway. The guard reported
+  # without enforcing, which is the failure mode it existed to prevent, one level up. Verified
+  # by making the config unreadable and watching probe print the refusal and then answer
+  # `not_authed`. Callers must consume this status with `|| exit 2`.
+  if [ "$_rc" -ne 0 ]; then
+    # Refuse ONLY when a config exists and cannot be read. gstack-config exits non-zero for
+    # both that and "there is no config at all", and the two want opposite answers: an
+    # unreadable file is a misconfiguration worth stopping for, while a HOME-less or
+    # config-less container is simply UNCONFIGURED and must keep behaving exactly as today —
+    # which is the property that makes this whole feature safe to adopt. Collapsing them made
+    # probe exit 2 in a CI container, breaking the environment the HOME-less fix exists for.
+    if [ -e "$_STATE_DIR/config.yaml" ] && [ ! -r "$_STATE_DIR/config.yaml" ]; then
+      echo "gstack-outside-voice: cannot read '$1' from configuration ($_CONFIG exited $_rc; $_STATE_DIR/config.yaml exists but is not readable). Refusing to guess — an unreadable config is not an unconfigured one, and guessing either bills the frontier price for every round or ignores a switch that turned billing off." >&2
+      return 1
+    fi
+    printf '%s' ""
+    return 0
+  fi
   printf '%s' "$_v"
 }
 
@@ -149,8 +168,8 @@ resolve_backend() {
   # config is not the same fact as an unconfigured one; only the second is safe to default.
   [ -x "$_CONFIG" ] || die "cannot read configuration: $_CONFIG is missing or not executable. Refusing to assume a backend — guessing here bills the frontier price for every loop round."
   case "$phase" in
-    loop)       backend="$(_cfg_strict outside_voice_loop)" ;;
-    final_gate) backend="$(_cfg_strict outside_voice_gate)" ;;
+    loop)       backend="$(_cfg_strict outside_voice_loop)" || exit 2 ;;
+    final_gate) backend="$(_cfg_strict outside_voice_gate)" || exit 2 ;;
     *) die "unknown phase '$phase' (want: loop|final_gate)" ;;
   esac
   # UNSET resolves to codex — an unconfigured install must behave exactly as it did before
@@ -195,7 +214,15 @@ probe() {
   # --explicit, same as cmd_exec: codex_reviews governs the AUTOMATIC passes. Without it the
   # gate guard — which is built on probe — reported `disabled` and skipped a review the user
   # had asked for by name, while exec would have run it.
-  if [ "$explicit" != "yes" ] && [ "$(_cfg codex_reviews)" = "disabled" ]; then echo "disabled"; return 0; fi
+  # `_cfg_strict`, not `_cfg`. The lossy reader collapses "unset" and "the config could not be
+  # read" into "", and "" is not "disabled" — so an unreadable config launched PAID reviews
+  # for a user who had switched them off. This is the same defect already fixed for backend
+  # selection, on the one decision that outranks it: not WHICH backend to bill, but whether
+  # to bill at all. Refusing is the only honest answer to "am I allowed to spend money here".
+  if [ "$explicit" != "yes" ]; then
+    _cr="$(_cfg_strict codex_reviews)" || exit 2
+    [ "$_cr" = "disabled" ] && { echo "disabled"; return 0; }
+  fi
   backend="$(resolve_backend "$phase")"
 
   if [ "$backend" = "misconfigured" ]; then echo "misconfigured"; return 0; fi
@@ -511,7 +538,11 @@ cmd_exec() {
   # the automatic passes off could no longer run one by name — a regression against both the
   # previous direct-CLI behaviour and the config's own documented contract. --explicit says the
   # user asked for this review by name; the master switch still governs everything else.
-  if [ "$explicit" != "yes" ] && [ "$(_cfg codex_reviews)" = "disabled" ]; then
+  # Strict here too — the sibling site above and this one are one decision, and fixing only
+  # the one the review named would leave the exec path billing on an unreadable config.
+  _cr2=""
+  [ "$explicit" != "yes" ] && { _cr2="$(_cfg_strict codex_reviews)" || exit 2; }
+  if [ "$explicit" != "yes" ] && [ "$_cr2" = "disabled" ]; then
     echo "OUTSIDE_VOICE_DISABLED codex_reviews=disabled" >&2
     return 3
   fi

@@ -109,6 +109,16 @@ def _redirects(base_url, timeout=5):
         read as broken — an offline or firewalled box would otherwise be told its config is
         wrong, which is a worse lie than the one being fixed. exec still fail-closes, so the
         guarantee is preserved either way; this only moves the refusal earlier when it can.
+
+    KNOWN GAP, declined deliberately — do not "fix" this by switching to POST. A gateway may
+    answer HEAD with 200 and redirect the billed POST, and this check would miss it. The
+    remedy is worse than the defect on both available routes: a real POST to
+    /chat/completions IS the review request, so probing that way bills for every readiness
+    check; and a POST crafted to be cheap is a different request from the one whose behaviour
+    we are trying to predict, so it proves nothing about the real one. HEAD is the strongest
+    signal obtainable without spending money. The residual case is narrow (method-specific
+    redirect rules on a custom gateway), and exec still refuses it at request time, so the
+    key is never exposed — what remains is a late failure, not an unsafe one.
     """
     req = urllib.request.Request(_endpoint(base_url), method="HEAD")
 
