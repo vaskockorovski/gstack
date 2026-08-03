@@ -222,7 +222,10 @@ log_usage() {
 # a registry removes the class outright, because no path is ever interpolated into shell text.
 _OV_CLEANUP=()
 _ov_cleanup_run() { [ ${#_OV_CLEANUP[@]} -eq 0 ] || rm -f "${_OV_CLEANUP[@]}"; }
-_ov_cleanup_add() { _OV_CLEANUP+=("$@"); trap _ov_cleanup_run EXIT INT TERM; }
+# HUP too: a detached round outliving its terminal is the NORMAL way this runs on a large
+# diff — the skill now tells callers to background it — so hangup is the signal most likely to
+# fire, and it was the one signal the cleanup did not cover.
+_ov_cleanup_add() { _OV_CLEANUP+=("$@"); trap _ov_cleanup_run EXIT INT TERM HUP; }
 
 # --- timeout wrapper (gtimeout → timeout → unwrapped) -----------------------
 
