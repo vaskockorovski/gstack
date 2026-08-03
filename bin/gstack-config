@@ -311,9 +311,18 @@ case "${1:-}" in
     # the same value arrives here truncated and silently bills a model nobody chose. Refuse it
     # on the read side too: setter-only validation protects the path the config header tells
     # users not to take ("edit freely").
-    if [ "$KEY" = "outside_voice_loop_model" ] \
-       && grep -qE "^${KEY}:[[:space:]]*[^[:space:]]+[[:space:]]+[^[:space:]]" "$CONFIG_FILE" 2>/dev/null; then
-      printf '%s' "__blank__"; exit 0
+    # Strip an inline comment BEFORE judging the value. The check below exists because
+    # `awk '{print $2}'` silently truncates a two-word value — but `model-id # why` is not a
+    # two-word value, it is a value with a comment, and this config file's own header uses
+    # inline comments on nearly every example line while explicitly inviting hand edits. The
+    # first version rejected the shape the documentation teaches, turning a valid model id into
+    # a sentinel that aborted every round.
+    if [ "$KEY" = "outside_voice_loop_model" ]; then
+      _line=$(grep -E "^${KEY}:" "$CONFIG_FILE" 2>/dev/null | tail -1 | sed 's/[[:space:]]#.*$//')
+      _val=$(printf '%s' "$_line" | sed "s/^${KEY}:[[:space:]]*//")
+      if [ -n "$_line" ] && [ "$(printf '%s' "$_val" | wc -w | tr -d '[:space:]')" != "1" ]; then
+        printf '%s' "__blank__"; exit 0
+      fi
     fi
     if [ -z "$VALUE" ]; then
       VALUE=$(lookup_default "$KEY")
