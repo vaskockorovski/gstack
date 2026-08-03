@@ -279,6 +279,8 @@ elif [ -s "$TMPERR" ]; then
 fi
 # Prefer the validated block over the prose whenever one exists. Absent means the codex
 # backend ran and owns its own format — read its [P1] markers as before.
+_GATE_BACKEND=$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase final_gate 2>/dev/null || echo unknown)
+echo "GATE_BACKEND: $_GATE_BACKEND"
 if [ "$_CODEX_EXIT" = "0" ] && [ -s "$_GATE_FINDINGS" ]; then
   echo "GATE_FINDINGS_JSON: $(cat "$_GATE_FINDINGS")"
   echo "Use these counts for the step 4 verdict, NOT a grep of the prose."
@@ -319,27 +321,42 @@ cosmetic — a reasoning model's OUTPUT budget is the binding constraint on a la
 and a review that exhausts it emits nothing at all and still bills in full. Spend the
 budget on finding defects, not on describing them at length.
 PROMPT
-_OV_FINDINGS=$(mktemp "$TMP_ROOT/gstack-ov-findings-XXXXXX.json")
+_OV_FINDINGS="$TMP_ROOT/gstack-ov-findings.json"
 # BACKGROUNDED, not inline. 900s exceeds the host shell's own cap, so an inline call is
 # killed by the harness while the model is still generating — which bills the round and
 # returns nothing. Saying so in prose is not enough: this skill already learned, over four
 # rounds, that a step written beside a code block instead of inside it does not get run.
-_OV_DONE=$(mktemp "$TMP_ROOT/gstack-ov-done-XXXXXX")
+# Stable paths, not mktemp: re-running this block must poll the EXISTING child. A fresh
+# mktemp each time would start a second paid review and orphan the first — and the message
+# below tells the caller to re-run, so the two have to agree.
+_OV_DONE="$TMP_ROOT/gstack-ov-done"
+_OV_LAUNCHED="$TMP_ROOT/gstack-ov-launched"
 # The adapter's STDOUT is the review itself on the codex backend, which emits no findings
 # file — so discarding it (this was `> /dev/null`) lost the entire result on the DEFAULT
 # configuration while every other signal still looked healthy.
-_OV_OUT=$(mktemp "$TMP_ROOT/gstack-ov-out-XXXXXX.txt")
+_OV_OUT="$TMP_ROOT/gstack-ov-out.txt"
+if [ ! -f "$_OV_LAUNCHED" ]; then
+touch "$_OV_LAUNCHED"
 nohup bash -c '~/.claude/skills/gstack/bin/gstack-outside-voice exec \
   --phase loop --prompt-file "'"$_LOOP_PROMPT"'" --repo-root "'"$_REPO_ROOT"'" \
   --base "origin/<base>" --effort medium --timeout 900 \
   --findings-out "'"$_OV_FINDINGS"'" < /dev/null 2>"'"$TMPERR"'"
 echo $? > "'"$_OV_DONE"'"' > "$_OV_OUT" 2>&1 &
+fi
 # Poll the marker rather than waiting inline, so the host cap never sees a long call.
-# 55 x 10s = 550s, inside the host's 600000 maximum with headroom. Polling for THIRTY minutes
-# under a TEN minute cap was arithmetic that could not hold: the host killed the wrapper before
-# the exit code and findings were emitted, every time a round ran long — which is the case this
-# path exists for. A round that outlives the window is reported as ROUND STATE UNKNOWN, which
-# is honest, and the orphan note below says how to find the child that is still billing.
+# Bounded to fit the host cap: 55 x 10s = 550s inside a 600000 maximum.
+#
+# THREE numbers have to satisfy one chain — adapter timeout < poll window < host cap — and
+# fixing any pair in isolation broke the third. A 30-minute poll under a 10-minute cap got the
+# wrapper killed; shrinking the poll to 550s then abandoned rounds the adapter was still
+# allowed 900s to finish. No single Bash call can hold a 15-minute round, because the host cap
+# is 600000 and cannot be raised, and squeezing the adapter to fit would cap real reviews at
+# nine minutes on exactly the large diffs this path exists for.
+#
+# So this block does not try to finish the job. If the marker has not appeared, RUN THIS SAME
+# BLOCK AGAIN — it re-polls the existing child rather than starting a new one, because the
+# launch above is skipped when $_OV_DONE already exists. Two or three repeats cover a
+# fifteen-minute round.
 for _i in $(seq 1 55); do [ -s "$_OV_DONE" ] && break; sleep 10; done
 if [ -s "$_OV_DONE" ]; then
   _OV_EXIT=$(cat "$_OV_DONE")
@@ -349,7 +366,7 @@ else
   # that has not happened, and deleting the findings file would race a writer that is about to
   # produce it. Neither the exit code nor the file is ours to touch yet.
   _OV_EXIT=125
-  echo "ROUND STATE UNKNOWN — the review did not finish within the 30-minute poll and may still be running. If neither gtimeout nor timeout is installed the adapter warned that it ran UNCAPPED, in which case the call is not bounded by anything and is now orphaned: find it with 'ps -eo pid,etime,cmd | grep gstack-outside-voice' and kill it by PID before re-running, or it keeps billing. This is NOT a clean round and NOT a timeout; nothing has been established. The findings file is left in place for the running call."
+  echo "ROUND STILL RUNNING — not finished within this 550s poll window. This is NOT a failure and NOT a timeout: the adapter is allowed 900s. RE-RUN THIS BLOCK to keep polling the same child; it will not start a second review. If neither gtimeout nor timeout is installed the adapter warned that it ran UNCAPPED, in which case the call is not bounded by anything and is now orphaned: find it with 'ps -eo pid,etime,cmd | grep gstack-outside-voice' and kill it by PID before re-running, or it keeps billing. This is NOT a clean round and NOT a timeout; nothing has been established. The findings file is left in place for the running call."
 fi
 rm -f "$_LOOP_PROMPT"
 if [ "$_OV_EXIT" = "124" ]; then
@@ -412,7 +429,7 @@ else
 fi
 # Not on 125: a still-running call is about to write this file, and deleting it would race
 # the writer and destroy the round's only machine-readable result.
-[ "$_OV_EXIT" = "125" ] || rm -f "$_OV_FINDINGS" "$_OV_OUT"
+[ "$_OV_EXIT" = "125" ] || rm -f "$_OV_FINDINGS" "$_OV_OUT" "$_OV_DONE" "$_OV_LAUNCHED"
 ```
 
 **If `$_OV_FINDINGS` does not exist after a successful run, the backend was `codex`** — it owns
@@ -567,6 +584,14 @@ grep "tokens used" "$TMPERR" 2>/dev/null || echo "tokens: unknown"
 ```
 
 4. Determine gate verdict by checking the review output for critical findings.
+   **First read `GATE_BACKEND:`.** If it is anything other than `codex`, the gate was
+   DEGRADED and the verdict must say so: the adapter warns that a hosted gate is a
+   diff-scoped pass on the loop model, so defects in files this branch did not touch were
+   never discoverable. Report it as **PASS (degraded gate)** or **FAIL (degraded gate)** —
+   never as a plain PASS. A degraded gate reported as a full one is worse than no gate,
+   because it is the same words with none of the coverage, and the warning that said so
+   went to a stderr the verdict never read.
+
    **If a `GATE_FINDINGS_JSON:` line was printed, the verdict comes from it and from
    nothing else**: `p1 > 0` is **FAIL**, `p1 == 0` is **PASS**. The block is validated —
    its counts must agree with its own findings array — and it exists precisely so a hosted
