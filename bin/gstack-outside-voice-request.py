@@ -203,7 +203,23 @@ def ask(message, on_fail=None):
         # process group — by which point the request is billed and nothing is returned.
         sock_timeout = max(30, int(os.environ.get("OR_TIMEOUT", "330")) - 30)
         with urllib.request.urlopen(req, timeout=sock_timeout) as r:
-            return json.load(r)
+            raw = r.read()
+        try:
+            return json.loads(raw)
+        except ValueError as e:
+            # A 200 whose body is not JSON is a DIFFERENT failure from "the request failed",
+            # and the generic handler below reported it as the latter — "openrouter request
+            # failed: Expecting value: line 1963 column 1" names the parser's cursor and
+            # nothing about what actually arrived, which is the one thing needed to tell an
+            # HTML error page from a truncated body from an unexpected stream. Show a slice.
+            # The body is a RESPONSE, so it carries no credential of ours; the request, which
+            # does, is still never echoed.
+            head = raw[:400].decode("utf-8", "replace").replace("\n", " ")
+            sys.stderr.write("openrouter returned HTTP 200 with a body that is not JSON "
+                             "(%s). %d bytes, starts: %r\n" % (e, len(raw), head))
+            if on_fail is not None:
+                on_fail()
+            sys.exit(1)
     except urllib.error.HTTPError as e:
         # Print the API error WITHOUT echoing the request. Never print the Authorization header.
         sys.stderr.write("openrouter HTTP %s: %s\n"
