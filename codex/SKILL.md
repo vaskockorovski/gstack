@@ -1216,11 +1216,22 @@ _OV_LAUNCHED="$TMP_ROOT/gstack-ov-launched-$_OV_LANE"
 _OV_OUT="$TMP_ROOT/gstack-ov-out-$_OV_LANE.txt"
 if [ ! -f "$_OV_LAUNCHED" ]; then
 touch "$_OV_LAUNCHED"
+# Paths travel as ARGV, never spliced into the script text. The `'"$VAR"'` idiom this replaced
+# closed the quote and pasted each VALUE into the string `bash -c` then parses, so the inner
+# shell re-evaluated it inside double quotes. Measured, rather than reasoned about: a path
+# holding `$(id -u)` or a backtick EXECUTED (`/home/$(id -u)/p` arrived as `/home/1000/p`), and
+# one holding a double quote was silently corrupted — the quotes vanished and the round wrote
+# to a filename nobody asked for. A single quote, the case that looks most dangerous and is the
+# one usually reported, was in fact harmless here: the value sits inside inner double quotes.
+# That mismatch is the lesson — the idiom's real hazard is expansion, not quote-breaking, so
+# escaping quotes would have fixed the symptom people notice and left execution wide open.
+# With "$1".."$5" the values are passed as arguments and are never parsed as shell at all.
+# The `_` is argv[0] for the inner shell; without it, "$1" would silently be $0 and be lost.
 nohup bash -c '~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
-  --phase loop --prompt-file "'"$_LOOP_PROMPT"'" --repo-root "'"$_REPO_ROOT"'" \
+  --phase loop --prompt-file "$1" --repo-root "$2" \
   --base "origin/<base>" --effort medium --timeout 900 \
-  --findings-out "'"$_OV_FINDINGS"'" < /dev/null 2>"'"$TMPERR"'"
-echo $? > "'"$_OV_DONE"'"' > "$_OV_OUT" 2>&1 &
+  --findings-out "$3" < /dev/null 2>"$4"
+echo $? > "$5"' _ "$_LOOP_PROMPT" "$_REPO_ROOT" "$_OV_FINDINGS" "$TMPERR" "$_OV_DONE" > "$_OV_OUT" 2>&1 &
 fi
 # Poll the marker rather than waiting inline, so the host cap never sees a long call.
 # Bounded to fit the host cap: 55 x 10s = 550s inside a 600000 maximum.

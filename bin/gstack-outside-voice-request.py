@@ -492,6 +492,13 @@ def parse_findings(text):
     # not: the nonce is what distinguishes the answer from any echoed example, so first-vs-last
     # no longer decides correctness, and last-wins remains the safer default if a model repeats
     # the block after its prose (the later copy is the one it settled on).
+    #
+    # That argument has ONE precondition, and it is enforced elsewhere: no text carrying a live
+    # copy of this nonce may be fed back to the model. The retry prompt quotes the previous
+    # reply, which is the one place that could, so it neutralises the marker before embedding
+    # it (see the retry construction). Without that, last-wins would hand back the stale block
+    # the retry was sent to replace. If you ever quote model output into a prompt again, mangle
+    # the fence there too, or this line silently becomes wrong.
     try:
         obj = json.loads(blocks[-1])
     except Exception as e:
@@ -673,7 +680,22 @@ if findings_path:
                  # to prevent. Generous cap: this carries no diff, so even at 200k it is a
                  # fraction of the first call, and the ceiling is only here to stop a runaway
                  # response from blowing the context window.
-                 % (why, FENCE, text[:200000]))
+                 #
+                 # NEUTRALISE the fence in the quoted reply. The nonce authenticates the block
+                 # against anything echoed out of the DIFF, because the diff is fixed before the
+                 # nonce is drawn. That argument does not hold here: this text is the model's own
+                 # previous reply, so its malformed fence carries THIS request's live nonce. Quote
+                 # it verbatim and the retry response can contain two blocks bearing the same
+                 # valid marker — the corrected one, and the stale one the model was shown. The
+                 # parser takes the last, so a successful retry could be discarded in favour of
+                 # the exact block it was sent to replace, and the round exits 4 or reports stale
+                 # severities. Defence and attack sharing one token is the whole bug; breaking the
+                 # marker in the echo restores the property the nonce was supposed to give.
+                 # Replace the WHOLE marker rather than suffixing it: BLOCK_RE tolerates a
+                 # trailing [A-Za-z0-9_.+-]* token after the fence (a language tag), so
+                 # FENCE + "-echo" still matches it. Dropping the nonce is what makes the
+                 # echoed block unmatchable.
+                 % (why, FENCE, text[:200000].replace(FENCE, "findings-json-QUOTED-ECHO")))
         # The FIRST call already succeeded and was already billed, and its counts are sitting
         # in p_tok/c_tok. Exiting here without writing them discards a cost that was genuinely
         # incurred — the same defect fixed for content_of two rounds ago, still open on the

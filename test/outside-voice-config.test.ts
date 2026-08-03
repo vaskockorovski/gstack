@@ -422,3 +422,51 @@ describe('probe enforces the request layer base-url rule rather than a copy of i
     expect(shell).not.toMatch(/^\s*https:\/\/\*\)/m);
   });
 });
+
+describe('the loop launcher passes paths as argv, not as shell text', () => {
+  // The `'"$VAR"'` idiom closed the quote and pasted each VALUE into the string `bash -c` then
+  // parses. Measured against the real idiom: a path holding `$(id -u)` or a backtick EXECUTED,
+  // and one holding a double quote was silently corrupted (the quotes vanished and the round
+  // wrote to a filename nobody asked for). A single quote — the case usually reported, and the
+  // one the review that found this named — was harmless, because the value sits inside inner
+  // double quotes. That mismatch is why this is pinned structurally: escaping quotes would fix
+  // the symptom people look for and leave expansion, the actual hazard, wide open.
+  const SKILL = path.join(ROOT, 'codex', 'SKILL.md');
+  const TMPL = path.join(ROOT, 'codex', 'SKILL.md.tmpl');
+
+  test.each([['generated skill', SKILL], ['template', TMPL]])('%s launches via argv', (_l, f) => {
+    const text = fs.readFileSync(f as string, 'utf-8');
+    // The values arrive as positional parameters...
+    expect(text).toContain('_ "$_LOOP_PROMPT" "$_REPO_ROOT" "$_OV_FINDINGS" "$TMPERR" "$_OV_DONE"');
+    expect(text).toContain('--prompt-file "$1" --repo-root "$2"');
+    // ...and no path is spliced into the quoted script text any more.
+    expect(text).not.toContain(`--prompt-file "'"$_LOOP_PROMPT"'"`);
+    expect(text).not.toContain(`echo $? > "'"$_OV_DONE"'"`);
+  });
+});
+
+describe('the retry prompt cannot feed a live fence back to the model', () => {
+  const REQUEST = path.join(ROOT, 'bin', 'gstack-outside-voice-request.py');
+
+  // The nonce authenticates the block against anything echoed out of the DIFF, because the diff
+  // is fixed before the nonce is drawn. The retry prompt quotes the model's OWN previous reply,
+  // whose malformed fence carries this request's live nonce — so the retry response could hold
+  // two blocks with the same valid marker, and `blocks[-1]` would return the stale one the retry
+  // was sent to replace. Proven directly: with the echo unneutralised the parser returned
+  // {"p1": 9,...} (the stale block) and with it neutralised {"p1": 0,...} (the corrected one).
+  test('the quoted previous reply has its fence marker stripped of the nonce', () => {
+    const py = fs.readFileSync(REQUEST, 'utf-8');
+    expect(py).toContain('text[:200000].replace(FENCE, "findings-json-QUOTED-ECHO")');
+    // Never embed the raw reply again.
+    expect(py).not.toMatch(/%\s*\(why,\s*FENCE,\s*text\[:200000\]\)\)/);
+  });
+
+  // The near-miss worth pinning: BLOCK_RE tolerates a trailing [A-Za-z0-9_.+-]* language tag
+  // after the fence, so `FENCE + "-QUOTED-ECHO"` STILL matches it. A suffix does not neutralise
+  // anything; only dropping the nonce does. This asserts the replacement is a standalone
+  // literal rather than one built from FENCE.
+  test('the echo marker is a standalone literal, not a suffix of the live fence', () => {
+    const py = fs.readFileSync(REQUEST, 'utf-8');
+    expect(py).not.toMatch(/replace\(FENCE,\s*FENCE\s*\+/);
+  });
+});
