@@ -44,6 +44,29 @@ import urllib.request
 NONCE = secrets.token_hex(4)
 FENCE = "findings-json-" + NONCE
 
+def redact(text):
+    """Strip anything credential-shaped from a RESPONSE body before it reaches stderr.
+
+    The base URL is overridable, so the responder is not always OpenRouter — and a debugging
+    proxy or test stub that echoes request headers puts our own Authorization header in its
+    response body. Every error path here prints that body to help diagnose the failure, so the
+    code that works hardest never to echo $OPENROUTER_API_KEY hands it over anyway, through
+    the response rather than the request. Verified by pointing the adapter at a reflecting stub
+    and watching the token appear on stderr.
+
+    Redacts the live key by VALUE first — the strongest guarantee, since it needs no pattern to
+    be right — then the generic shapes, so a proxy echoing some OTHER credential is covered too.
+    """
+    if not text:
+        return text
+    live = os.environ.get("OPENROUTER_API_KEY", "")
+    if live and len(live) > 8:
+        text = text.replace(live, "<redacted>")
+    text = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{8,}", r"\1<redacted>", text)
+    text = re.sub(r"sk-[A-Za-z0-9._\-]{8,}", "<redacted>", text)
+    return text
+
+
 def required_env(name):
     """Fetch a required input, or fail with the NAME rather than a KeyError traceback.
 
@@ -307,7 +330,7 @@ def ask(message, on_fail=None):
             # HTML error page from a truncated body from an unexpected stream. Show a slice.
             # The body is a RESPONSE, so it carries no credential of ours; the request, which
             # does, is still never echoed.
-            head = raw[:400].decode("utf-8", "replace").replace("\n", " ")
+            head = redact(raw[:400].decode("utf-8", "replace").replace("\n", " "))
             sys.stderr.write("openrouter returned HTTP 200 with a body that is not JSON "
                              "(%s). %d bytes, starts: %r\n" % (e, len(raw), head))
             if on_fail is not None:
@@ -325,7 +348,7 @@ def ask(message, on_fail=None):
     except urllib.error.HTTPError as e:
         # Print the API error WITHOUT echoing the request. Never print the Authorization header.
         sys.stderr.write("openrouter HTTP %s: %s\n"
-                         % (e.code, e.read().decode("utf-8", "replace")[:2000]))
+                         % (e.code, redact(e.read().decode("utf-8", "replace")[:2000])))
         if e.code in (401, 403):
             # `probe` said "ready" to get here — it only checks that the variable is NON-EMPTY,
             # which is a presence check wearing a capability check's clothes. So the operator
@@ -367,7 +390,7 @@ def content_of(payload, on_fail=None):
         sys.exit(1)
 
     if payload.get("error"):
-        sys.stderr.write("openrouter error: %s\n" % json.dumps(payload["error"])[:2000])
+        sys.stderr.write("openrouter error: %s\n" % redact(json.dumps(payload["error"])[:2000]))
         bail()
     choices = payload.get("choices") or []
     raw_content = (choices[0].get("message", {}).get("content") if choices else "") or ""
