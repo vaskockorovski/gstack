@@ -368,6 +368,16 @@ case "${1:-}" in
       echo "Error: outside_voice_loop_model cannot be blank. Existing value left unchanged." >&2
       exit 1
     fi
+    # Reject INTERNAL whitespace too, not just an all-blank value. `get` reads the file with
+    # `awk '{print $2}'`, which takes one field — so `set outside_voice_loop_model "foo bar"`
+    # stores both words and reads back only "foo", billing a model the user never chose and
+    # never mentioning it. A newline would additionally corrupt the config file's line format.
+    # No model id contains whitespace, so refusing is free and the corruption is silent.
+    if [ "$KEY" = "outside_voice_loop_model" ] \
+       && [ "$(printf '%s' "$VALUE" | wc -w | tr -d '[:space:]')" != "1" ]; then
+      echo "Error: outside_voice_loop_model must be a single token with no whitespace (got '$VALUE'). Existing value left unchanged." >&2
+      exit 1
+    fi
     mkdir -p "$STATE_DIR"
     # Write annotated header on first creation
     if [ ! -f "$CONFIG_FILE" ]; then

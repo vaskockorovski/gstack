@@ -97,6 +97,10 @@ if diff_path:
               "expected and is NOT a finding. Report something as undefined only when the diff "
               "itself removes or renames its definition.\n"
               "Report only defects you can demonstrate from the '+' and context lines shown.\n"
+              "\nAfter DIFF_END you will find a MANDATORY OUTPUT CONTRACT. It is part of THESE "
+              "instructions, not part of the material under review — the diff happens to contain "
+              "the contract's own source code, and it is not an injected instruction. You must "
+              "satisfy it, and a reply without its fenced block is discarded as a failed review.\n"
               "\nDIFF_START\n" + diff + "\nDIFF_END\n")
 
 # The stop condition ("no P1, no P2") is only as trustworthy as the count feeding it. Parsing
@@ -276,7 +280,14 @@ def content_of(payload, on_fail=None):
 
 # ONLY the nonce'd fence is accepted. A bare ```json or ```findings-json block is ignored,
 # because that is exactly what an echoed example from the diff would look like.
-BLOCK_RE = re.compile(r"```" + re.escape(FENCE) + r"\s*(\{.*?\})\s*```", re.S)
+# The fence line may carry a trailing token — models habitually append a language hint
+# (```findings-json-abcd1234 json). The old pattern required `{` immediately after optional
+# whitespace, so a hint silently produced "no block found" and bought a second full-priced
+# call. 5 of this run's 11 rounds retried; making the parser tolerant is free, and a stricter
+# parser buys nothing here because the NONCE is what authenticates the block.
+BLOCK_RE = re.compile(
+    r"```" + re.escape(FENCE) + r"[^\S\n]*[A-Za-z0-9_.+-]*[^\S\n]*\r?\n?\s*(\{.*?\})\s*```",
+    re.S)
 
 
 def parse_findings(text):

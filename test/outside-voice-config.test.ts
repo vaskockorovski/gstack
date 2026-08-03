@@ -89,6 +89,44 @@ describe('backend resolution refuses to guess', () => {
   });
 });
 
+describe('the findings fence tolerates what models actually emit', () => {
+  // 5 of 11 live rounds bought a second full-priced call because the first reply's block was
+  // not recognised. A stricter fence buys nothing — the per-request NONCE is what authenticates
+  // the block, not the absence of a trailing language hint.
+  function parse(text: string): number | null {
+    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-ov-fence-'));
+    const src = fs.readFileSync(path.join(ROOT, 'bin', 'gstack-outside-voice-request.py'), 'utf-8');
+    const reLine = src.split('\n').slice(src.split('\n').findIndex((l) => l.startsWith('BLOCK_RE = re.compile('))).slice(0, 3).join('\n');
+    const script = path.join(dir, 'p.py');
+    fs.writeFileSync(
+      script,
+      `import re, json, sys\nFENCE = "findings-json-deadbeef"\n${reLine}\n` +
+        `m = BLOCK_RE.findall(sys.stdin.read())\nprint(json.loads(m[-1])["p1"] if m else -1)\n`,
+    );
+    const r = spawnSync('python3', [script], { input: text, encoding: 'utf-8' });
+    fs.rmSync(dir, { recursive: true, force: true });
+    const n = parseInt((r.stdout || '').trim(), 10);
+    return Number.isNaN(n) ? null : n;
+  }
+
+  const FENCE = 'findings-json-deadbeef';
+  const J = '{"p1": 1, "p2": 0, "p3": 0, "findings": [{"severity":"P1","title":"a","location":"f:1"}]}';
+
+  test.each([
+    ['plain', '```' + FENCE + '\n' + J + '\n```'],
+    ['with a language hint', '```' + FENCE + ' json\n' + J + '\n```'],
+    ['all on one line', '```' + FENCE + ' ' + J + '```'],
+    ['crlf line endings', '```' + FENCE + '\r\n' + J + '\r\n```'],
+  ])('accepts a block %s', (_label, text) => {
+    expect(parse(text as string)).toBe(1);
+  });
+
+  // The nonce is the whole security property: a block echoed out of the diff must not count.
+  test('still rejects a block whose fence nonce is wrong', () => {
+    expect(parse('```findings-json-cafebabe\n' + J + '\n```')).toBe(-1);
+  });
+});
+
 describe('outsideVoicePreflight renders valid bash', () => {
   // `$${m}` inside a TS template literal is a LITERAL $ followed by an interpolation, so it
   // renders `$_CODEX_MODE`. A reviewer read it as `$$` + name — bash's PID variable — and
