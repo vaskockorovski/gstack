@@ -208,11 +208,16 @@ probe() {
   # The base URL too. The request layer refuses anything but https, or http on loopback, so an
   # override like ftp:// or a remote http:// passed preflight and failed at request time —
   # breaking the readiness contract the generated skills branch on, over a value probe never read.
-  case "${GSTACK_OUTSIDE_VOICE_BASE_URL:-https://openrouter.ai/api/v1}" in
-    https://*) : ;;
-    http://127.0.0.1*|http://localhost*|"http://[::1]"*) : ;;
-    *) echo "misconfigured"; return 0 ;;
-  esac
+  #
+  # CALL the request layer's validator rather than restating it. The glob that used to live here
+  # disagreed with it on 7 of 15 tried URLs, in both directions: `http://localhost@evil.com` is
+  # userinfo-not-host and matched `http://localhost*`, so probe said `ready` for a plaintext
+  # REMOTE carrying the key; and `HTTPS://…` is valid but is not the literal `https://`, so a
+  # working config was called misconfigured. A prefix glob cannot express "the host IS loopback".
+  # This is the fourth time the two sides disagreed about "usable" — hence deriving, not patching.
+  GSTACK_OUTSIDE_VOICE_BASE_URL="${GSTACK_OUTSIDE_VOICE_BASE_URL:-}" \
+    python3 "$_SELF_DIR/gstack-outside-voice-request.py" --check-base-url 2>/dev/null \
+    || { echo "misconfigured"; return 0; }
   echo "ready"
 }
 

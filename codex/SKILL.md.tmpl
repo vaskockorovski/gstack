@@ -39,6 +39,64 @@ assumptions, catches things you might miss. Present its output faithfully, not s
 
 ---
 
+## Step 0.2: Resolve portable roots
+
+Before any mode runs, resolve `$PLAN_ROOT` (where plan files live) and `$TMP_ROOT`
+(where ephemeral codex stderr / response captures land) via `bin/gstack-paths`.
+This keeps the skill working whether installed as a Claude Code plugin
+(`CLAUDE_PLANS_DIR` set), a global `~/.claude/skills/gstack/` install, or a CI
+container where `HOME` may be unset and `/tmp` may be read-only.
+
+```bash
+eval "$(~/.claude/skills/gstack/bin/gstack-paths)"
+```
+
+After this, every subsequent bash block in this skill uses `"$PLAN_ROOT"` and
+`"$TMP_ROOT"` rather than hardcoded `~/.claude/plans` or `/tmp/codex-*`.
+
+---
+
+## Step 0.3: Detect mode
+
+Parse the user's input to determine which mode to run. **Settle this before the codex checks
+below** — Step 0.4 needs the resolved mode to pick the phase whose backend it should test, and
+case 3 resolves the mode by asking the user, so nothing earlier can know it. Carry the result
+forward: review → `loop` if `--loop` else `final_gate`; challenge/consult/plan → `none`.
+
+1. `/codex review` or `/codex review <instructions>` — **Review mode** (Step 2A)
+1a. `/codex review --loop` — **Review mode, loop phase** (Step 2A, loop path): runs the
+    round on the backend configured for the iterative loop (`outside_voice_loop`) rather
+    than the final gate. Same stop condition; cheaper rounds. Without the flag, review
+    runs the final gate exactly as before.
+2. `/codex challenge` or `/codex challenge <focus>` — **Challenge mode** (Step 2B)
+3. `/codex` with no arguments — **Auto-detect:**
+   - Check for a diff (with fallback if origin isn't available):
+     `git diff origin/<base> --stat 2>/dev/null | tail -1 || git diff <base> --stat 2>/dev/null | tail -1`
+   - If a diff exists, use AskUserQuestion:
+     ```
+     Codex detected changes against the base branch. What should it do?
+     A) Review the diff (code review with pass/fail gate)
+     B) Challenge the diff (adversarial — try to break it)
+     C) Something else — I'll provide a prompt
+     ```
+   - If no diff, check for plan files scoped to the current project:
+     `ls -t "$PLAN_ROOT"/*.md 2>/dev/null | xargs grep -l "$(basename $(pwd))" 2>/dev/null | head -1`
+     If no project-scoped match, fall back to: `ls -t "$PLAN_ROOT"/*.md 2>/dev/null | head -1`
+     but warn the user: "Note: this plan may be from a different project."
+   - If a plan file exists, offer to review it
+   - Otherwise, ask: "What would you like to ask Codex?"
+4. `/codex <anything else>` — **Consult mode** (Step 2C), where the remaining text is the prompt
+
+**Reasoning effort override:** If the user's input contains `--xhigh` anywhere,
+note it and remove it from the prompt text before passing to Codex. When `--xhigh`
+is present, use `model_reasoning_effort="xhigh"` for all modes regardless of the
+per-mode default below. Otherwise, use the per-mode defaults:
+- Review (2A): `high` — bounded diff input, needs thoroughness
+- Challenge (2B): `high` — adversarial but bounded by diff
+- Consult (2C): `medium` — large context, interactive, needs speed
+
+---
+
 ## Step 0.4: Check codex binary
 
 ```bash
@@ -55,10 +113,20 @@ assumptions, catches things you might miss. Present its output faithfully, not s
 # the common split — cheap loop, frontier gate — blocked `/codex review --loop` on a machine
 # with no Codex, even though that round runs entirely through the hosted backend. Too coarse
 # in the other direction too: the default gate path was blocked by a hosted LOOP setting.
-# `<phase>` is `loop` when the user passed --loop, `final_gate` otherwise.
-# SET THIS LINE before running the block: `loop` if the user typed `/codex review --loop`,
-# `final_gate` for a default or focused review, and `none` for challenge/consult/plan modes,
-# which call codex directly and must keep their gating.
+#
+# SET THIS LINE from the mode Step 0.3 ALREADY RESOLVED — do not re-derive it from what the
+# user typed: `loop` for review --loop, `final_gate` for a default or focused review, `none`
+# for challenge/consult/plan, which call codex directly and must keep their gating.
+#
+# Step 0.3 runs BEFORE this step, and that ordering is load-bearing rather than cosmetic.
+# Mode detection used to sit after these checks, which left bare `/codex` — whose mode is
+# settled by ASKING the user (Step 0.3, case 3) — with no knowable phase at this point. Any
+# value guessed here was wrong roughly half the time, and both errors were the exact ones
+# this block exists to prevent: guess `final_gate` and a user who then picks Challenge has
+# had the binary/auth gating skipped for a mode that shells out to codex directly, failing
+# later with none of the install instructions below; guess `none` and a hosted-backend
+# machine holding no Codex is blocked from a review that never needed it — the original bug.
+# Resolving the mode first makes the phase always knowable, so no guess is required.
 #
 # An earlier version wrote `if [ "<mode>" = "review" ]` here. Placeholders like <base> are
 # substituted by the agent when it writes a prompt, but a placeholder inside a CONDITIONAL
@@ -126,61 +194,6 @@ env-auth users (CI, platform engineers) that file-only checks would reject.
 **Update the known-bad list** in `bin/gstack-codex-probe` when a new Codex CLI version
 regresses. Current entries (`0.120.0`, `0.120.1`, `0.120.2`) trace to the stdin
 deadlock fixed in #972.
-
----
-
-## Step 0.6: Resolve portable roots
-
-Before any mode runs, resolve `$PLAN_ROOT` (where plan files live) and `$TMP_ROOT`
-(where ephemeral codex stderr / response captures land) via `bin/gstack-paths`.
-This keeps the skill working whether installed as a Claude Code plugin
-(`CLAUDE_PLANS_DIR` set), a global `~/.claude/skills/gstack/` install, or a CI
-container where `HOME` may be unset and `/tmp` may be read-only.
-
-```bash
-eval "$(~/.claude/skills/gstack/bin/gstack-paths)"
-```
-
-After this, every subsequent bash block in this skill uses `"$PLAN_ROOT"` and
-`"$TMP_ROOT"` rather than hardcoded `~/.claude/plans` or `/tmp/codex-*`.
-
----
-
-## Step 1: Detect mode
-
-Parse the user's input to determine which mode to run:
-
-1. `/codex review` or `/codex review <instructions>` — **Review mode** (Step 2A)
-1a. `/codex review --loop` — **Review mode, loop phase** (Step 2A, loop path): runs the
-    round on the backend configured for the iterative loop (`outside_voice_loop`) rather
-    than the final gate. Same stop condition; cheaper rounds. Without the flag, review
-    runs the final gate exactly as before.
-2. `/codex challenge` or `/codex challenge <focus>` — **Challenge mode** (Step 2B)
-3. `/codex` with no arguments — **Auto-detect:**
-   - Check for a diff (with fallback if origin isn't available):
-     `git diff origin/<base> --stat 2>/dev/null | tail -1 || git diff <base> --stat 2>/dev/null | tail -1`
-   - If a diff exists, use AskUserQuestion:
-     ```
-     Codex detected changes against the base branch. What should it do?
-     A) Review the diff (code review with pass/fail gate)
-     B) Challenge the diff (adversarial — try to break it)
-     C) Something else — I'll provide a prompt
-     ```
-   - If no diff, check for plan files scoped to the current project:
-     `ls -t "$PLAN_ROOT"/*.md 2>/dev/null | xargs grep -l "$(basename $(pwd))" 2>/dev/null | head -1`
-     If no project-scoped match, fall back to: `ls -t "$PLAN_ROOT"/*.md 2>/dev/null | head -1`
-     but warn the user: "Note: this plan may be from a different project."
-   - If a plan file exists, offer to review it
-   - Otherwise, ask: "What would you like to ask Codex?"
-4. `/codex <anything else>` — **Consult mode** (Step 2C), where the remaining text is the prompt
-
-**Reasoning effort override:** If the user's input contains `--xhigh` anywhere,
-note it and remove it from the prompt text before passing to Codex. When `--xhigh`
-is present, use `model_reasoning_effort="xhigh"` for all modes regardless of the
-per-mode default below. Otherwise, use the per-mode defaults:
-- Review (2A): `high` — bounded diff input, needs thoroughness
-- Challenge (2B): `high` — adversarial but bounded by diff
-- Consult (2C): `medium` — large context, interactive, needs speed
 
 ---
 

@@ -27,6 +27,65 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+
+def _validate_base_url(base_url):
+    """The SINGLE source of truth for the base-URL policy. Returns (ok, message).
+
+    The Authorization header rides on this request. A plain-http override would put the API key
+    on the wire in clear text, and the override exists mainly so tests can point at a local stub
+    — so allow http ONLY for loopback, and refuse it anywhere else rather than warn. A warning
+    would be printed to a stderr nobody reads until after the key has already leaked.
+
+    ALLOWLIST the scheme; do not blocklist `http`. Testing only for `http` left three doors open,
+    and each one sends the key somewhere it should never go:
+      * case. URL schemes are case-insensitive, so `HTTP://evil` is plain http to urllib but is
+        not the string "http" — the guard was skipped and the key went out in clear text.
+      * other schemes. `ftp://` has a urllib handler; `file://` reads the local disk and the run
+        is then logged as a successful round. Neither is https, and neither was checked.
+      * parsing. Hand-splitting on ":" mangles IPv6 — `http://[::1]:8080` yielded a host of "["
+        which failed the allowlist, so the one loopback form the comment promised to support was
+        refused. urlsplit().hostname strips the brackets and lowercases, which is the whole job.
+
+    The shell probe used to approximate this rule with a glob `case`, and the two disagreed in
+    BOTH directions over 7 of 15 tried URLs — the fourth time the probe and this side have
+    disagreed about what "usable" means. Two of those disagreements matter on their own:
+
+      * `http://localhost@evil.com` — the glob `http://localhost*` matched, so the probe said
+        `ready`, but `localhost` there is USERINFO and the host is evil.com. The probe green-lit
+        a plaintext remote for a request that carries the API key. This side refused it, so it
+        was never exploitable end to end — but `ready` is the word the generated skills branch
+        on, so the probe was promising a round that could never run.
+      * `HTTPS://…` — schemes are case-insensitive, so this side accepted it while the
+        case-sensitive glob called a perfectly good config `misconfigured`.
+
+    A prefix glob cannot express "the host IS loopback"; only a parser can. So the probe now
+    calls this via --check-base-url instead of re-deriving it, and the class is gone rather
+    than patched.
+    """
+    split = urllib.parse.urlsplit(base_url)
+    scheme = (split.scheme or "").lower()
+    if scheme == "https":
+        return True, ""
+    if scheme == "http":
+        if (split.hostname or "") in ("127.0.0.1", "localhost", "::1"):
+            return True, ""
+        return False, ("refusing to send the API key over plain http to %r — use https, "
+                       "or point at loopback for testing" % (split.hostname or base_url))
+    return False, ("refusing to send the API key to a %r URL — GSTACK_OUTSIDE_VOICE_BASE_URL "
+                   "must be https (or http on loopback for testing)" % (scheme or base_url))
+
+
+# Probe entry point. Deliberately the FIRST top-level statement after the imports: it must need
+# none of the request env vars (OR_PROMPT_FILE et al), because the probe runs long before any
+# of them are set. Exits without doing, or billing, anything else.
+if "--check-base-url" in sys.argv[1:]:
+    _ok, _msg = _validate_base_url(
+        os.environ.get("GSTACK_OUTSIDE_VOICE_BASE_URL") or "https://openrouter.ai/api/v1")
+    if not _ok:
+        sys.stderr.write(_msg + "\n")
+        sys.exit(1)
+    sys.exit(0)
+
 # Per-request nonce in the fence marker.
 #
 # The diff is inlined into the prompt, and this reviewer reviews its own adapter — so the diff
@@ -223,33 +282,11 @@ if _KEY != _KEY.strip() or any(c.isspace() for c in _KEY):
 
 base_url = os.environ.get("GSTACK_OUTSIDE_VOICE_BASE_URL") or "https://openrouter.ai/api/v1"
 
-# The Authorization header rides on this request. A plain-http override would put the API key
-# on the wire in clear text, and the override exists mainly so tests can point at a local stub
-# — so allow http ONLY for loopback, and refuse it anywhere else rather than warn. A warning
-# here would be printed to a stderr nobody reads until after the key has already leaked.
-#
-# ALLOWLIST the scheme; do not blocklist `http`. Testing only for `http` left three doors open,
-# and each one sends the key somewhere it should never go:
-#   * case. URL schemes are case-insensitive, so `HTTP://evil` is plain http to urllib but is
-#     not the string "http" — the guard was skipped and the key went out in clear text.
-#   * other schemes. `ftp://` has a urllib handler; `file://` reads the local disk and the run
-#     is then logged as a successful round. Neither is https, and neither was checked.
-#   * parsing. Hand-splitting on ":" mangles IPv6 — `http://[::1]:8080` yielded a _host of "["
-#     which failed the allowlist, so the one loopback form the comment promised to support was
-#     refused. urlsplit().hostname strips the brackets and lowercases, which is the whole job.
-# Fail closed: anything not explicitly permitted is refused before a single byte is sent.
-_split = urllib.parse.urlsplit(base_url)
-_scheme = (_split.scheme or "").lower()
-if _scheme == "https":
-    pass
-elif _scheme == "http":
-    if (_split.hostname or "") not in ("127.0.0.1", "localhost", "::1"):
-        sys.stderr.write("refusing to send the API key over plain http to %r — use https, "
-                         "or point at loopback for testing\n" % (_split.hostname or base_url))
-        sys.exit(1)
-else:
-    sys.stderr.write("refusing to send the API key to a %r URL — GSTACK_OUTSIDE_VOICE_BASE_URL "
-                     "must be https (or http on loopback for testing)\n" % (_scheme or base_url))
+# Fail closed before a single byte is sent. The rule AND its rationale live in
+# _validate_base_url, so the probe enforces this policy rather than a copy of it.
+_ok, _msg = _validate_base_url(base_url)
+if not _ok:
+    sys.stderr.write(_msg + "\n")
     sys.exit(1)
 
 

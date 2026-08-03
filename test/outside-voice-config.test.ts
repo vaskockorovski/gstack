@@ -337,3 +337,88 @@ describe('the base-url guard allowlists schemes rather than blocklisting http', 
     expect(err).toMatch(/request failed/);
   });
 });
+
+// The probe is what the generated skills BRANCH on: `ready` is a promise that a round can run.
+// It used to approximate the base-url rule above with a glob `case`, and the approximation
+// disagreed with the real rule on 7 of 15 tried URLs, in both directions — the fourth time the
+// two sides had disagreed about what "usable" means (after key whitespace and model id).
+//
+// Two of the disagreements are worth naming, because they are opposite failures:
+//   * `http://localhost@evil.com` — `localhost` there is USERINFO, the host is evil.com. The
+//     glob `http://localhost*` matched, so probe said `ready` for a plaintext REMOTE carrying
+//     the API key. The request layer refused it, so it was never exploitable end to end; but
+//     probe had promised a round that could not run, which is the contract breach.
+//   * `HTTPS://…` — schemes are case-insensitive, so the request layer accepts it while the
+//     case-sensitive glob called a working config `misconfigured`.
+//
+// A prefix glob cannot express "the host IS loopback"; only a parser can. So probe now CALLS
+// the request layer's validator. This pins that, because the reason the glob existed —
+// "shelling out to python from the probe felt heavy" — is exactly the reasoning that would
+// reintroduce it.
+describe('probe enforces the request layer base-url rule rather than a copy of it', () => {
+  const REQUEST = path.join(ROOT, 'bin', 'gstack-outside-voice-request.py');
+
+  // What probe says. Configured so every OTHER readiness gate passes, leaving the base URL as
+  // the only variable — otherwise a `misconfigured` could come from the model or the key and
+  // the test would agree for the wrong reason.
+  function probeVerdict(baseUrl: string): string {
+    const home = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-ov-probe-'));
+    fs.mkdirSync(path.join(home, '.gstack'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.gstack', 'config.yaml'), 'outside_voice_loop: openrouter\n');
+    const r = spawnSync('bash', [ADAPTER, 'probe', '--phase', 'loop'], {
+      env: {
+        PATH: process.env.PATH,
+        HOME: home,
+        USERPROFILE: '',
+        OPENROUTER_API_KEY: 'dummy-never-sent',
+        GSTACK_OUTSIDE_VOICE_BASE_URL: baseUrl,
+      } as Record<string, string>,
+      encoding: 'utf-8',
+    });
+    fs.rmSync(home, { recursive: true, force: true });
+    return (r.stdout || '').trim();
+  }
+
+  // What the request layer does with the same URL, via the real script.
+  function requestRefuses(baseUrl: string): boolean {
+    const r = spawnSync('python3', [REQUEST, '--check-base-url'], {
+      env: {
+        PATH: process.env.PATH,
+        GSTACK_OUTSIDE_VOICE_BASE_URL: baseUrl,
+      } as Record<string, string>,
+      encoding: 'utf-8',
+    });
+    return (r.status ?? -1) !== 0;
+  }
+
+  // Every row the glob and the parser disagreed on, plus the ones they agreed on — a table
+  // where the old code passes proves nothing, so the disagreements must be present.
+  test.each([
+    ['canonical https', 'https://openrouter.ai/api/v1'],
+    ['uppercase scheme', 'HTTPS://openrouter.ai/api/v1'],
+    ['mixed-case scheme', 'Https://openrouter.ai/api/v1'],
+    ['IPv4 loopback', 'http://127.0.0.1:8080/v1'],
+    ['named loopback', 'http://localhost:8080/v1'],
+    ['IPv6 loopback', 'http://[::1]:8080/v1'],
+    ['uppercase http loopback', 'HTTP://127.0.0.1:8080/v1'],
+    ['loopback-prefixed remote host', 'http://localhost.evil.com/v1'],
+    ['IPv4-prefixed remote host', 'http://127.0.0.1.evil.com/v1'],
+    ['loopback as userinfo', 'http://localhost@evil.com/v1'],
+    ['userinfo before loopback', 'http://user@127.0.0.1:8080/v1'],
+    ['ftp', 'ftp://openrouter.ai/v1'],
+    ['file', 'file:///etc/passwd'],
+    ['plain http remote', 'http://evil.com/v1'],
+    ['https on loopback', 'https://127.0.0.1:8080/v1'],
+  ])('probe and the request layer agree on %s', (_label, url) => {
+    const refused = requestRefuses(url as string);
+    expect(probeVerdict(url as string)).toBe(refused ? 'misconfigured' : 'ready');
+  });
+
+  // Structural guard. The behavioural table above only catches a divergence that a URL in the
+  // table exposes; this catches the reintroduction of a SECOND implementation at all.
+  test('the shell holds no second copy of the scheme rule', () => {
+    const shell = fs.readFileSync(ADAPTER, 'utf-8');
+    expect(shell).toContain('--check-base-url');
+    expect(shell).not.toMatch(/^\s*https:\/\/\*\)/m);
+  });
+});
