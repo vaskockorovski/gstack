@@ -110,6 +110,16 @@ case "$_MAX_DIFF_BYTES" in
 esac
 [ "$_MAX_DIFF_BYTES" -gt 0 ] || { echo "gstack-outside-voice: GSTACK_OUTSIDE_VOICE_MAX_DIFF_BYTES must be greater than 0 — a cap of 0 truncates every diff to nothing." >&2; exit 2; }
 
+# Prompt cap — validated the same way as the diff cap above, because an override that is
+# non-numeric makes every later `-gt` an error under `set -e`, and one that is zero refuses
+# every prompt. Both fail in a way that names the comparison rather than the variable the
+# user set, which is the whole reason the diff cap validates itself here too.
+_MAX_PROMPT_BYTES="${GSTACK_OUTSIDE_VOICE_MAX_PROMPT_BYTES:-2000000}"
+case "$_MAX_PROMPT_BYTES" in
+  ''|*[!0-9]*) echo "gstack-outside-voice: GSTACK_OUTSIDE_VOICE_MAX_PROMPT_BYTES must be a positive whole number of bytes (got '$_MAX_PROMPT_BYTES')" >&2; exit 2 ;;
+esac
+[ "$_MAX_PROMPT_BYTES" -gt 0 ] || { echo "gstack-outside-voice: GSTACK_OUTSIDE_VOICE_MAX_PROMPT_BYTES must be greater than 0 — a cap of 0 refuses every prompt." >&2; exit 2; }
+
 _cfg() { "$_CONFIG" get "$1" 2>/dev/null || echo ""; }
 
 # Strict variant for the keys that decide WHICH BACKEND SPENDS MONEY. _cfg collapses "the key
@@ -446,6 +456,18 @@ cmd_exec() {
   # instructions — and a reviewer given no task plausibly returns no findings, which reads as a
   # clean round. Same family as the empty-diff guard: nothing asked is not nothing wrong.
   [ -s "$prompt_file" ] || die "prompt file is empty: $prompt_file. Refusing to send a review request with no instructions."
+  # The DIFF is capped and truncated-with-a-warning; the prompt had no guard at all, so an
+  # oversized one blew the context with nothing said. REFUSE rather than truncate, which is the
+  # opposite of the diff's handling and deliberately so: truncating a diff drops material the
+  # reviewer might have commented on, and the warning says so. Truncating the PROMPT drops the
+  # instructions — including the findings contract that decides how severities are reported —
+  # so the round would come back malformed, or worse, plausibly formed against half a spec.
+  # The cap is deliberately far above any real prompt; it is a runaway guard, not a budget.
+  local _psz
+  _psz=$(wc -c < "$prompt_file" | tr -d '[:space:]')
+  if [ "${_psz:-0}" -gt "$_MAX_PROMPT_BYTES" ]; then
+    die "prompt file is ${_psz} bytes, over the ${_MAX_PROMPT_BYTES}-byte cap (\$GSTACK_OUTSIDE_VOICE_MAX_PROMPT_BYTES). Refusing rather than truncating: cutting a prompt drops the instructions — including the findings contract — so the round would return a malformed or half-specified answer instead of a short one. Shorten the prompt, or inline less into it."
+  fi
   # xhigh is a real Codex reasoning level and the skill documents `/codex review --xhigh`,
   # so the adapter must accept it — rejecting it would make a documented flag unusable
   # the moment the gate started routing through here.

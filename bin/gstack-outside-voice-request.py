@@ -75,15 +75,63 @@ def _validate_base_url(base_url):
                    "must be https (or http on loopback for testing)" % (scheme or base_url))
 
 
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
+
+def _redirects(base_url, timeout=5):
+    """Does this base URL answer with a redirect? Returns (is_redirect, detail-or-None).
+
+    The scheme allowlist above validates the URL we were CONFIGURED with; it cannot see where
+    that URL points us NEXT. urllib follows 301/302/303 on a POST while forwarding request
+    headers — Authorization included — so the request layer refuses redirects outright, and a
+    syntactically perfect https URL that 301s therefore passed probe as `ready` and died at
+    request time. Fifth time probe and exec have disagreed about what "usable" means; the
+    others were key whitespace, model id, master switch and the base URL's own syntax.
+
+    Deliberately narrow, because a readiness probe that does I/O is its own hazard:
+      * ONLY runs for a CUSTOM base URL. The default never redirects, so the common path keeps
+        its zero-latency, zero-network probe and nothing about an ordinary install changes.
+      * A network failure returns "not a redirect", NOT "misconfigured". Undetermined must not
+        read as broken — an offline or firewalled box would otherwise be told its config is
+        wrong, which is a worse lie than the one being fixed. exec still fail-closes, so the
+        guarantee is preserved either way; this only moves the refusal earlier when it can.
+    """
+    req = urllib.request.Request(base_url, method="HEAD")
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        opener.open(req, timeout=timeout).close()
+        return False, None
+    except urllib.error.HTTPError as e:
+        if 300 <= e.code < 400:
+            return True, "%s -> %s" % (e.code, e.headers.get("Location") or "unspecified")
+        return False, None          # any other status is the server's business, not ours
+    except Exception:
+        return False, None          # undetermined — see the docstring; never "misconfigured"
+
+
 # Probe entry point. Deliberately the FIRST top-level statement after the imports: it must need
 # none of the request env vars (OR_PROMPT_FILE et al), because the probe runs long before any
 # of them are set. Exits without doing, or billing, anything else.
 if "--check-base-url" in sys.argv[1:]:
-    _ok, _msg = _validate_base_url(
-        os.environ.get("GSTACK_OUTSIDE_VOICE_BASE_URL") or "https://openrouter.ai/api/v1")
+    _burl = os.environ.get("GSTACK_OUTSIDE_VOICE_BASE_URL") or DEFAULT_BASE_URL
+    _ok, _msg = _validate_base_url(_burl)
     if not _ok:
         sys.stderr.write(_msg + "\n")
         sys.exit(1)
+    # Syntax is not the whole contract — exec also refuses redirects. Custom URLs only.
+    if _burl != DEFAULT_BASE_URL:
+        _red, _detail = _redirects(_burl)
+        if _red:
+            sys.stderr.write(
+                "GSTACK_OUTSIDE_VOICE_BASE_URL answers with a redirect (%s). The request layer "
+                "refuses to follow one, because urllib forwards the Authorization header across "
+                "it. Point the override at the final URL.\n" % _detail)
+            sys.exit(1)
     sys.exit(0)
 
 # Per-request nonce in the fence marker.
@@ -709,6 +757,16 @@ if findings_path:
         # reasoning out understates precisely the number that decides whether the cheap tier
         # fits a given diff size.
         r_tok = add_toks(r_tok, reasoning_toks(usage2))
+        # The retry is a SEPARATE billed call and an OpenRouter model id can route to a
+        # different upstream provider between calls. `served` was captured from the first
+        # payload and never updated, so a round whose retry landed elsewhere logged one model
+        # while paying two — and this row is what the per-voice hit-rate and cost comparison
+        # are computed from, so a wrong value here is not cosmetic, it is a corrupted
+        # measurement. Record BOTH when they differ rather than picking a winner: which call
+        # served which is exactly the thing a reader would otherwise have to guess.
+        _served2 = payload2.get("model", served)
+        if _served2 != served:
+            served = "%s+%s" % (served, _served2)
         _p2, _c2 = toks(usage2, "prompt_tokens"), toks(usage2, "completion_tokens")
         PARTIAL = toks_partial(p_tok, _p2) or toks_partial(c_tok, _c2)
         p_tok = add_toks(p_tok, _p2)

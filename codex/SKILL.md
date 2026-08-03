@@ -945,23 +945,35 @@ per-mode default below. Otherwise, use the per-mode defaults:
 # that the agent runs verbatim just compares two literals — the branch was always false, so
 # the bypass never fired and the feature stayed unreachable on the machines it was added for.
 # A placeholder that fails silently in a test is worse than one that fails loudly in a string.
-_OV_PHASE=              # ← REQUIRED: loop | final_gate | none
-# Unset stays `yes`, so forgetting to set it fails the SAFE way — the pre-adapter behaviour
-# of requiring Codex — rather than skipping checks a mode still needs. An earlier version
-# defaulted to `final_gate`, which was wrong in both directions at once: `review --loop`
-# checked the GATE's backend, and challenge/consult skipped their checks whenever the gate
-# happened to be hosted, though they call codex exec directly further down this file.
+_OV_PHASE="<<SET-ME: loop | final_gate | none>>"   # ← SUBSTITUTE THIS WHOLE STRING
+# A placeholder that VALIDATES ITSELF, checked BEFORE anything reads it.
+#
+# This was `_OV_PHASE=` — blank, with the obligation to fill it stated only in a comment. That
+# is safe (unset fell back to requiring Codex, the pre-adapter behaviour) and it is invisible:
+# "deliberately requiring Codex" and "nobody filled in the phase" produced identical output, so
+# on a hosted-only machine the feature simply seemed not to work. FOUR review rounds read this
+# block as dead code for exactly that reason — wrong about the mechanism every time, right that
+# a static reader cannot tell. Re-proving that each round costs the same as a real finding.
+#
+# The form below is the one this file's own history endorses: a placeholder inside a STRING that
+# is checked, never inside a conditional that silently compares two literals. The check runs
+# FIRST, because the resolution below shells out with this value — an unsubstituted one would
+# otherwise reach `backend --phase "<<SET-ME…>>"` and fail there, naming the adapter instead of
+# the line the reader actually has to edit.
+case "$_OV_PHASE" in
+  loop|final_gate|none) ;;
+  *) echo "STOP: _OV_PHASE was not substituted (still '$_OV_PHASE'). Step 0.3 has already resolved the mode; carry it here — 'loop' for review --loop, 'final_gate' for a default or focused review, 'none' for challenge/consult/plan. Re-run this block after substituting." >&2
+     return 2 2>/dev/null || exit 2 ;;
+esac
+# `none` means this invocation calls codex directly (challenge/consult/plan) and must keep its
+# gating. An earlier version defaulted to `final_gate`, wrong in both directions at once:
+# `review --loop` checked the GATE's backend, and challenge/consult skipped their checks
+# whenever the gate happened to be hosted, though they call codex exec further down this file.
 _NEEDS_CODEX=yes
-if [ -n "$_OV_PHASE" ] && [ "$_OV_PHASE" != "none" ]; then
+if [ "$_OV_PHASE" != "none" ]; then
   [ "$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase "$_OV_PHASE" 2>/dev/null)" = "codex" ] \
     && _NEEDS_CODEX=yes || _NEEDS_CODEX=no
 fi
-# Fail-closed and fail-LOUD are different properties, and this line only had the first.
-# Leaving _OV_PHASE unset falls back to requiring Codex, which is the SAFE direction — but
-# "deliberately requiring Codex" and "the phase line was never filled in" then looked
-# identical, so on a hosted-only machine the feature just seemed not to work. Three review
-# rounds have now read this block as dead code for the same reason. Say which one it is.
-[ -z "$_OV_PHASE" ] && echo "WARNING: _OV_PHASE was never set, so this falls back to REQUIRING Codex (the pre-adapter behaviour). If this machine runs a hosted backend, that is wrong and the review is about to stop for a Codex it never needed — go back to Step 0.3, set the phase, and re-run this block."
 echo "NEEDS_CODEX: $_NEEDS_CODEX"
 CODEX_BIN=$(command -v codex || echo "")
 [ -z "$CODEX_BIN" ] && echo "NOT_FOUND" || echo "FOUND: $CODEX_BIN"

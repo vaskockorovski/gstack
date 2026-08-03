@@ -625,6 +625,107 @@ describe('gstack-config list agrees with gstack-config get', () => {
   });
 });
 
+// The fifth probe/exec divergence of this lane: the scheme allowlist validates the URL we were
+// CONFIGURED with, but exec ALSO refuses redirects (urllib forwards Authorization across a
+// 301/302/303 on POST). A syntactically perfect https URL that 301s therefore passed probe as
+// `ready` and died at request time.
+describe('probe refuses a redirecting base URL, without doing I/O on the default', () => {
+  const REQUEST = path.join(ROOT, 'bin', 'gstack-outside-voice-request.py');
+
+  function check(env: Record<string, string>): number {
+    return spawnSync('python3', [REQUEST, '--check-base-url'],
+      { env: { PATH: process.env.PATH, ...env } as Record<string, string>, encoding: 'utf-8' }).status ?? -1;
+  }
+
+  test('the DEFAULT url is accepted without a network round-trip', () => {
+    // No server is running, so a network probe against the default would hang or fail. Passing
+    // instantly is the evidence that the default path does no I/O at all.
+    const started = Date.now();
+    expect(check({})).toBe(0);
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  test('an unreachable CUSTOM url stays ready — undetermined must not read as broken', () => {
+    // Fail-open here on purpose: exec still fail-closes, so the guarantee holds either way, and
+    // telling an offline box its config is wrong is a worse lie than the one being fixed.
+    expect(check({ GSTACK_OUTSIDE_VOICE_BASE_URL: 'https://127.0.0.1:9/v1' })).toBe(0);
+  });
+
+  test('a redirecting CUSTOM url is refused', () => {
+    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-redir-'));
+    fs.writeFileSync(path.join(dir, 'srv.py'), [
+      'from http.server import BaseHTTPRequestHandler, HTTPServer',
+      'class R(BaseHTTPRequestHandler):',
+      '    def do_HEAD(self):',
+      '        self.send_response(302); self.send_header("Location","https://evil.example/v1")',
+      '        self.send_header("Content-Length","0"); self.end_headers()',
+      '    do_GET = do_HEAD',
+      '    def log_message(self,*a): pass',
+      'HTTPServer(("127.0.0.1",8792), R).serve_forever()',
+    ].join('\n'));
+    const srv = spawn('python3', [path.join(dir, 'srv.py')], { stdio: 'ignore' });
+    try {
+      for (let i = 0; i < 50; i++) {
+        if (spawnSync('bash', ['-c', 'exec 3<>/dev/tcp/127.0.0.1/8792'], { encoding: 'utf-8' }).status === 0) break;
+        spawnSync('sleep', ['0.1']);
+      }
+      expect(check({ GSTACK_OUTSIDE_VOICE_BASE_URL: 'http://127.0.0.1:8792/v1' })).not.toBe(0);
+    } finally {
+      srv.kill();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('the phase placeholder validates itself', () => {
+  // Was `_OV_PHASE=` — blank, with the obligation stated only in a comment. Safe but invisible,
+  // and four review rounds read the block as dead code because a static reader cannot tell an
+  // unfilled placeholder from a dead literal. Re-proving that each round costs a real finding.
+  function runPhaseBlock(substitution: string | null): number {
+    const skill = fs.readFileSync(path.join(ROOT, 'codex', 'SKILL.md'), 'utf-8');
+    const m = skill.match(/_OV_PHASE="<<SET-ME[\s\S]*?\nfi\n/);
+    if (!m) throw new Error('the _OV_PHASE block was not found — did it move?');
+    const block = substitution === null ? m[0]
+      : m[0].replace(/^_OV_PHASE=.*$/m, `_OV_PHASE=${substitution}`);
+    return spawnSync('bash', ['-c', block],
+      { env: { PATH: process.env.PATH, HOME: process.env.HOME } as Record<string, string>, encoding: 'utf-8' }).status ?? -1;
+  }
+
+  test('an unsubstituted placeholder stops the block', () => {
+    expect(runPhaseBlock(null)).toBe(2);
+  });
+
+  test.each([['loop'], ['final_gate'], ['none']])('a substituted %s proceeds', (v) => {
+    expect(runPhaseBlock(v as string)).toBe(0);
+  });
+});
+
+describe('an oversized prompt is refused, not truncated', () => {
+  // The diff is capped and truncated-with-a-warning; the prompt had no guard at all. Refusing is
+  // deliberately the OPPOSITE of the diff's handling: truncating a diff drops material the
+  // reviewer might have commented on and says so, while truncating the prompt drops the
+  // instructions — including the findings contract that decides how severities are reported.
+  function exec(promptBytes: number): { status: number; err: string } {
+    const dir = fs.mkdtempSync(path.join(process.env.TMPDIR || '/tmp', 'gstack-prompt-'));
+    const f = path.join(dir, 'p.txt');
+    fs.writeFileSync(f, 'x'.repeat(promptBytes));
+    const r = spawnSync('bash', [ADAPTER, 'exec', '--phase', 'loop', '--prompt-file', f, '--repo-root', ROOT],
+      { env: { PATH: process.env.PATH, HOME: process.env.HOME, GSTACK_OUTSIDE_VOICE_MAX_PROMPT_BYTES: '1000' } as Record<string, string>, encoding: 'utf-8' });
+    fs.rmSync(dir, { recursive: true, force: true });
+    return { status: r.status ?? -1, err: r.stderr || '' };
+  }
+
+  test('over the cap refuses and names the cap', () => {
+    const r = exec(1500);
+    expect(r.status).not.toBe(0);
+    expect(r.err).toMatch(/over the 1000-byte cap/);
+  });
+
+  test('under the cap does not trip the guard', () => {
+    expect(exec(500).err).not.toMatch(/over the .*-byte cap/);
+  });
+});
+
 describe('the retry prompt cannot feed a live fence back to the model', () => {
   const REQUEST = path.join(ROOT, 'bin', 'gstack-outside-voice-request.py');
 
