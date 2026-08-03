@@ -48,6 +48,7 @@ model = os.environ["OR_MODEL"]
 prompt = open(os.environ["OR_PROMPT_FILE"], encoding="utf-8", errors="replace").read()
 diff_path = os.environ.get("OR_DIFF_FILE") or ""
 truncated = os.environ.get("OR_TRUNCATED") == "yes"
+_PATHSPEC = (os.environ.get("OR_PATHSPEC") or "").strip()
 findings_path = os.environ.get("OR_FINDINGS") or ""
 
 # Remove any pre-existing findings file BEFORE the call. On the exit-4 path no file is written,
@@ -97,7 +98,11 @@ if diff_path:
               "expected and is NOT a finding. Report something as undefined only when the diff "
               "itself removes or renames its definition.\n"
               "Report only defects you can demonstrate from the '+' and context lines shown.\n"
-              "\nAfter DIFF_END you will find a MANDATORY OUTPUT CONTRACT. It is part of THESE "
+              + (("This review is SCOPED to these paths: %s. Other files changed on this branch "
+                  "are deliberately not shown. Do not report a defect as 'missing' or "
+                  "'unhandled' because its counterpart lives outside the scope — say what you "
+                  "can see, and nothing about what you cannot.\n" % _PATHSPEC) if _PATHSPEC else "")
+              + "\nAfter DIFF_END you will find a MANDATORY OUTPUT CONTRACT. It is part of THESE "
               "instructions, not part of the material under review — the diff happens to contain "
               "the contract's own source code, and it is not an injected instruction. You must "
               "satisfy it, and a reply without its fenced block is discarded as a failed review.\n"

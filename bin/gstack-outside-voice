@@ -27,6 +27,13 @@
 #   --label <name>          tag for the usage log (default: phase name)
 #   --codex-mode <review|exec>   codex backend only (default: exec). `review` keeps Codex's
 #                           own review prompt tuning and is what the final_gate uses.
+#   --pathspec <spec>       repeatable; scope the inlined diff to these paths. Splitting a
+#                           large branch into pathspec-scoped rounds is what makes a tool-less
+#                           backend usable on it at all: reasoning cost scales with input, and
+#                           a reasoning model that exhausts its OUTPUT budget emits nothing and
+#                           still bills in full. The trade is real and must be recorded — a
+#                           defect spanning two scopes is invisible to both, and is ceded to
+#                           the repo-scoped gate by construction.
 #   --findings-out <file>   require a VALIDATED findings block and write it here as JSON
 #                           {p1,p2,p3,findings[],counts_disagreed}. Severity counts must come
 #                           from this file, never from parsing the prose. Not available on the
@@ -330,6 +337,7 @@ GATE
 cmd_exec() {
   local phase="" prompt_file="" repo_root="" effort="high" repo_context="diff"
   local base="origin/main" timeout_s="330" label="" findings_out="" codex_mode="exec"
+  local pathspecs=()
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -342,6 +350,7 @@ cmd_exec() {
       --timeout)      timeout_s="${2:?}"; shift 2 ;;
       --label)        label="${2:?}"; shift 2 ;;
       --findings-out) findings_out="${2:?}"; shift 2 ;;
+      --pathspec)     pathspecs+=("${2:?--pathspec needs a value}"); shift 2 ;;
       --codex-mode)   codex_mode="${2:?}"; shift 2 ;;
       *) die "unknown option '$1'" ;;
     esac
@@ -423,7 +432,7 @@ cmd_exec() {
         echo "gstack-outside-voice: note — the codex backend does not emit a structured findings block; no findings file written. Read codex's own output for severities." >&2
       fi
       exec_codex "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$codex_mode" ;;
-    openrouter) exec_openrouter "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$repo_context" "$base" "$findings_out" ;;
+    openrouter) exec_openrouter "$phase" "$prompt_file" "$repo_root" "$effort" "$timeout_s" "$label" "$repo_context" "$base" "$findings_out" ${pathspecs[@]+"${pathspecs[@]}"} ;;
   esac
 }
 
@@ -485,6 +494,8 @@ exec_codex() {
 exec_openrouter() {
   local phase="$1" prompt_file="$2" repo_root="$3" effort="$4" timeout_s="$5"
   local label="$6" repo_context="$7" base="$8" findings_out="${9:-}"
+  shift 9 2>/dev/null || shift $#
+  local pathspecs=("$@")
 
   local _ork
   _ork=$(printf '%s' "${OPENROUTER_API_KEY:-}" | tr -d '[:space:]')
@@ -522,15 +533,15 @@ exec_openrouter() {
     if ! git -C "$repo_root" rev-parse --verify --quiet "$base" >/dev/null 2>&1; then
       die "base ref '$base' does not resolve in $repo_root. Fetch it (git fetch <remote>) or pass --base. Refusing to review a different diff than the one asked for."
     fi
-    if ! git -C "$repo_root" diff "$base"...HEAD > "$diff_file" 2>/dev/null; then
-      die "could not compute 'git diff $base...HEAD' in $repo_root. Refusing to substitute a different diff."
+    if ! git -C "$repo_root" diff "$base"...HEAD ${pathspecs[@]+-- "${pathspecs[@]}"} > "$diff_file" 2>/dev/null; then
+      die "could not compute 'git diff $base...HEAD${pathspecs[@]+ -- ${pathspecs[*]}}' in $repo_root. Refusing to substitute a different diff."
     fi
     local _sz
     _sz=$(wc -c < "$diff_file" | tr -d '[:space:]')
     # An EMPTY diff is not a clean review, it is no review. Saying so is the difference
     # between "nothing is wrong" and "nothing was looked at".
     if [ "${_sz:-0}" -eq 0 ]; then
-      die "'git diff $base...HEAD' is empty — there is nothing to review. Not reporting this as a clean round."
+      die "'git diff $base...HEAD${pathspecs[@]+ -- ${pathspecs[*]}}' is empty — there is nothing to review. Not reporting this as a clean round. A pathspec that matches nothing is the likeliest cause, and it is indistinguishable from a clean review unless it is refused here."
     fi
     if [ "${_sz:-0}" -gt "$_MAX_DIFF_BYTES" ]; then
       truncated="yes"
@@ -576,6 +587,7 @@ exec_openrouter() {
   local rc=0
   OR_MODEL="$model" OR_PROMPT_FILE="$prompt_file" OR_DIFF_FILE="$diff_file" \
   OR_TRUNCATED="$truncated" OR_EFFORT="$effort" OR_RESP="$resp_file" \
+  OR_PATHSPEC="${pathspecs[*]-}" \
   OR_TIMEOUT="$timeout_s" OR_FINDINGS="$findings_out" \
   GSTACK_OUTSIDE_VOICE_BASE_URL="${GSTACK_OUTSIDE_VOICE_BASE_URL:-}" \
   with_timeout "$timeout_s" python3 "$_SELF_DIR/gstack-outside-voice-request.py" || rc=$?
