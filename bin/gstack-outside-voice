@@ -181,7 +181,9 @@ probe() {
 
 log_usage() {
   # $1 backend  $2 model  $3 phase  $4 label  $5 prompt_tokens  $6 completion_tokens
-  # $7 status  $8 tokens_partial ("true"/"false")  $9 reasoning_tokens (or "unknown")
+  # $7 status  $8 tokens_partial ("true"/"false", optional)  $9 reasoning_tokens ("unknown"
+  # or a number, optional). The codex call sites pass 7 and rely on the defaults, which is
+  # correct: codex reports neither figure, so both resolve to false/null rather than to zero.
   # NEVER records prompt text, diff content, or credentials.
   [ "$(_cfg telemetry)" = "off" ] && return 0
   mkdir -p "$_STATE_DIR/analytics" 2>/dev/null || return 0
