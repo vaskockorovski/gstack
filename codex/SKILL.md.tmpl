@@ -486,17 +486,40 @@ _PROMPT_FILE=$(mktemp "$TMP_ROOT/codex-prompt-XXXXXX.txt")
 # had no way to tell. --codex-mode exec keeps this path's semantics (a custom prompt, not
 # Codex's own review scaffolding) and additionally passes the prompt on stdin rather than argv,
 # which removes the ARG_MAX hazard of inlining a diff into a command line.
+# The SAME flag contract the other two call sites satisfy. Routing this path last round
+# without it reproduced, one call site over, three defects already fixed elsewhere:
+#   --findings-out   without it a hosted gate is graded by grepping [P1] out of prose, so a
+#                    critical finding phrased "Critical" reads as a PASS (fixed on the default
+#                    gate two rounds ago)
+#   --base           without it a tool-less backend falls back to the adapter's built-in
+#                    default base ref and reviews the wrong diff on any repo that does not use
+#                    it (fixed on the default gate three rounds ago; this site was still
+#                    missing it and NO round had reported it — the call-site sweep did)
+#   --repo-context   this prompt already embeds the diff and the adapter appends its own for a
+#                    tool-less backend, so without `none` the diff is sent TWICE
+_FOCUS_FINDINGS=$(mktemp "$TMP_ROOT/gstack-focus-findings-XXXXXX.json")
 ~/.claude/skills/gstack/bin/gstack-outside-voice exec \
   --phase final_gate --codex-mode exec \
   --prompt-file "$_PROMPT_FILE" --repo-root "$_REPO_ROOT" \
-  --effort high --timeout 330 < /dev/null 2>"$TMPERR"
+  --base "origin/<base>" --repo-context none \
+  --effort high --timeout 330 --findings-out "$_FOCUS_FINDINGS" < /dev/null 2>"$TMPERR"
 _CODEX_EXIT=$?
 rm -f "$_PROMPT_FILE"
 if [ "$_CODEX_EXIT" = "124" ]; then
-  _gstack_codex_log_event "codex_timeout" "330"
+  _gstack_codex_log_event "outside_voice_timeout" "focus:$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase final_gate 2>/dev/null || echo unknown):330"
   _gstack_codex_log_hang "review" "$(wc -c < "$TMPERR" 2>/dev/null || echo 0)"
-  echo "Codex stalled past 5.5 minutes."
+  echo "The review stalled past 5.5 minutes."
+elif [ -s "$TMPERR" ]; then
+  echo "[outside-voice notes — the review SUCCEEDED; these qualify it]"
+  head -20 "$TMPERR" 2>/dev/null | sed 's/^/  /' || true
 fi
+# Printed under the SAME label the default gate uses, so step 4's rule — prefer the validated
+# block, fall back to markers only when none was printed and the exit was 0 — covers this path
+# too, with no second rule to keep in step.
+if [ "$_CODEX_EXIT" = "0" ] && [ -s "$_FOCUS_FINDINGS" ]; then
+  echo "GATE_FINDINGS_JSON: $(cat "$_FOCUS_FINDINGS")"
+fi
+rm -f "$_FOCUS_FINDINGS"
 ```
 
 **Why the dual path:** The default `codex review` path keeps Codex's review
