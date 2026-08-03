@@ -498,9 +498,12 @@ cmd_exec() {
     # structural sweep as the price of a round that could not run afterwards either. Exactly the
     # ordering the comment above claims to have fixed, on the one state it did not enumerate.
     misconfigured)
-      local _mkey="outside_voice_loop_model"
-      [ "$phase" = "final_gate" ] && _mkey="outside_voice_gate_model"
-      die "the $backend backend is configured but cannot run. Check \`gstack-config get $_mkey\` (a blank model id refuses rather than guessing) and \$GSTACK_OUTSIDE_VOICE_BASE_URL, which must be https, or http on loopback. Refusing to start a round that would fail after the pre-flight gate." ;;
+      # ONE model key serves BOTH phases — exec_openrouter reads outside_voice_loop_model
+      # whatever the phase, and there is no outside_voice_gate_model anywhere in gstack-config.
+      # The first version of this message branched on phase and named that key for final_gate,
+      # inventing a setting the operator would have searched for and never found: a remediation
+      # message is only as good as the key it names, and a wrong key is worse than a vague one.
+      die "the $backend backend is configured but cannot run. Check \`gstack-config get outside_voice_loop_model\` — one key, used for BOTH phases, and blank refuses rather than guessing — and \$GSTACK_OUTSIDE_VOICE_BASE_URL, which must be https, or http on loopback. Refusing to start a round that would fail after the pre-flight gate." ;;
     # Unreachable today — codex_reviews=disabled and a disabled backend both return earlier —
     # but enumerated so the branch table stays total. A state probe can emit and this case does
     # not name is a silent fall-through to preflight_gate, which is the bug being fixed here.

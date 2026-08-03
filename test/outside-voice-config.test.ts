@@ -437,8 +437,12 @@ describe('the loop launcher passes paths as argv, not as shell text', () => {
   test.each([['generated skill', SKILL], ['template', TMPL]])('%s launches via argv', (_l, f) => {
     const text = fs.readFileSync(f as string, 'utf-8');
     // The values arrive as positional parameters...
-    expect(text).toContain('_ "$_LOOP_PROMPT" "$_REPO_ROOT" "$_OV_FINDINGS" "$TMPERR" "$_OV_DONE"');
+    expect(text).toContain(
+      '_ "$_LOOP_PROMPT" "$_REPO_ROOT" "$_OV_FINDINGS" "$TMPERR" "$_OV_DONE" "$_OV_EFFORT"');
     expect(text).toContain('--prompt-file "$1" --repo-root "$2"');
+    // ...including the effort, which was hard-coded to medium and silently dropped --xhigh.
+    expect(text).toContain('--effort "$6"');
+    expect(text).not.toContain('--effort medium --timeout 900');
     // ...and no path is spliced into the quoted script text any more.
     expect(text).not.toContain(`--prompt-file "'"$_LOOP_PROMPT"'"`);
     expect(text).not.toContain(`echo $? > "'"$_OV_DONE"'"`);

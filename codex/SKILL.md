@@ -901,6 +901,9 @@ note it and remove it from the prompt text before passing to Codex. When `--xhig
 is present, use `model_reasoning_effort="xhigh"` for all modes regardless of the
 per-mode default below. Otherwise, use the per-mode defaults:
 - Review (2A): `high` — bounded diff input, needs thoroughness
+- Review, loop path (2A `--loop`): `medium` — deliberately NOT review's `high`. This is the
+  cheap tier and its value is many rounds at low cost. `--xhigh` still overrides it, as above;
+  carry the resolved value into `_OV_EFFORT` at the launcher.
 - Challenge (2B): `high` — adversarial but bounded by diff
 - Consult (2C): `medium` — large context, interactive, needs speed
 
@@ -1224,6 +1227,13 @@ _OV_LAUNCHED="$TMP_ROOT/gstack-ov-launched-$_OV_LANE"
 # file — so discarding it (this was `> /dev/null`) lost the entire result on the DEFAULT
 # configuration while every other signal still looked healthy.
 _OV_OUT="$TMP_ROOT/gstack-ov-out-$_OV_LANE.txt"
+# The loop runs at `medium` DELIBERATELY — it is the cheap tier, and the whole point is many
+# rounds at low cost, so it does not inherit review mode's `high` default. But `--xhigh` is
+# documented in Step 0.3 as overriding "all modes regardless of the per-mode default", and this
+# line used to hard-code medium, so `/codex review --loop --xhigh` silently did not. An override
+# the user typed and the skill documents, dropped without a word, is worse than not offering it.
+# SET THIS LINE: `xhigh` if the user passed --xhigh, otherwise `medium`.
+_OV_EFFORT=medium
 if [ ! -f "$_OV_LAUNCHED" ]; then
 touch "$_OV_LAUNCHED"
 # Paths travel as ARGV, never spliced into the script text. The `'"$VAR"'` idiom this replaced
@@ -1239,9 +1249,9 @@ touch "$_OV_LAUNCHED"
 # The `_` is argv[0] for the inner shell; without it, "$1" would silently be $0 and be lost.
 nohup bash -c '~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
   --phase loop --prompt-file "$1" --repo-root "$2" \
-  --base "origin/<base>" --effort medium --timeout 900 \
+  --base "origin/<base>" --effort "$6" --timeout 900 \
   --findings-out "$3" < /dev/null 2>"$4"
-echo $? > "$5"' _ "$_LOOP_PROMPT" "$_REPO_ROOT" "$_OV_FINDINGS" "$TMPERR" "$_OV_DONE" > "$_OV_OUT" 2>&1 &
+echo $? > "$5"' _ "$_LOOP_PROMPT" "$_REPO_ROOT" "$_OV_FINDINGS" "$TMPERR" "$_OV_DONE" "$_OV_EFFORT" > "$_OV_OUT" 2>&1 &
 fi
 # Poll the marker rather than waiting inline, so the host cap never sees a long call.
 # Bounded to fit the host cap: 55 x 10s = 550s inside a 600000 maximum.
