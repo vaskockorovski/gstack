@@ -48,7 +48,11 @@ model = os.environ["OR_MODEL"]
 prompt = open(os.environ["OR_PROMPT_FILE"], encoding="utf-8", errors="replace").read()
 diff_path = os.environ.get("OR_DIFF_FILE") or ""
 truncated = os.environ.get("OR_TRUNCATED") == "yes"
-_PATHSPEC = (os.environ.get("OR_PATHSPEC") or "").strip()
+# Newline-delimited, not space-joined: a pathspec may legitimately contain spaces, and joining
+# on them made the disclosure ambiguous about where one path ended and the next began. git was
+# never affected — the invocation passes "${pathspecs[@]}" — but three review rounds read the
+# joined string and concluded it was, which is its own argument for not writing it that way.
+_PATHSPEC = ", ".join(p for p in (os.environ.get("OR_PATHSPEC") or "").split("\n") if p.strip())
 findings_path = os.environ.get("OR_FINDINGS") or ""
 
 # Remove any pre-existing findings file BEFORE the call. On the exit-4 path no file is written,

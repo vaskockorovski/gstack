@@ -72,6 +72,14 @@ _STATE_DIR="${GSTACK_STATE_ROOT:-${GSTACK_HOME:-${GSTACK_STATE_DIR:-$HOME/.gstac
 # voices carry ~1M-token windows. Exceeding it truncates LOUDLY (see below) —
 # a silently truncated review is indistinguishable from a clean one.
 _MAX_DIFF_BYTES="${GSTACK_OUTSIDE_VOICE_MAX_DIFF_BYTES:-1500000}"
+# A non-numeric override makes every later `-gt` comparison an error under `set -e`, which
+# exits mid-run with a message about integer expressions rather than about the variable the
+# user set. A zero or negative one is worse: it truncates every diff to nothing, and the
+# truncation guard then reports "nothing to review" for a cap the user typo'd.
+case "$_MAX_DIFF_BYTES" in
+  ''|*[!0-9]*) echo "gstack-outside-voice: GSTACK_OUTSIDE_VOICE_MAX_DIFF_BYTES must be a positive whole number of bytes (got '$_MAX_DIFF_BYTES')" >&2; exit 2 ;;
+esac
+[ "$_MAX_DIFF_BYTES" -gt 0 ] || { echo "gstack-outside-voice: GSTACK_OUTSIDE_VOICE_MAX_DIFF_BYTES must be greater than 0 — a cap of 0 truncates every diff to nothing." >&2; exit 2; }
 
 _cfg() { "$_CONFIG" get "$1" 2>/dev/null || echo ""; }
 
@@ -590,7 +598,7 @@ exec_openrouter() {
   local rc=0
   OR_MODEL="$model" OR_PROMPT_FILE="$prompt_file" OR_DIFF_FILE="$diff_file" \
   OR_TRUNCATED="$truncated" OR_EFFORT="$effort" OR_RESP="$resp_file" \
-  OR_PATHSPEC="${pathspecs[*]-}" \
+  OR_PATHSPEC="$(printf '%s\n' ${pathspecs[@]+"${pathspecs[@]}"})" \
   OR_TIMEOUT="$timeout_s" OR_FINDINGS="$findings_out" \
   GSTACK_OUTSIDE_VOICE_BASE_URL="${GSTACK_OUTSIDE_VOICE_BASE_URL:-}" \
   with_timeout "$timeout_s" python3 "$_SELF_DIR/gstack-outside-voice-request.py" || rc=$?
