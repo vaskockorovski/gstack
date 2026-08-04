@@ -2,18 +2,49 @@ import { describe, test, expect } from 'bun:test';
 import { spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 
-// Temp dirs use os.tmpdir() deliberately, and this has now been argued BOTH ways by review.
-// Round 28 flagged `process.env.TMPDIR || '/tmp'` and asked for the platform helper; round 32
-// flagged the helper and asked to "redirect through TMPDIR". Measured: os.tmpdir() RETURNS
-// $TMPDIR when it is set (TMPDIR=/var/tmp -> /var/tmp), so the second request is precisely what
-// the helper already does, and reverting would restore the hand-rolled form the first round
-// objected to. If $TMPDIR is unset AND /tmp is unwritable there is no third option a test file
-// could choose — the runner itself would have nowhere to work. Left as is, on purpose.
 const ROOT = path.resolve(import.meta.dir, '..');
 const ADAPTER = path.join(ROOT, 'bin', 'gstack-outside-voice');
 const CONFIG = path.join(ROOT, 'bin', 'gstack-config');
+
+// Temp roots follow bin/gstack-paths' chain — TMPDIR -> TMP -> project-local .gstack/tmp —
+// and NOT os.tmpdir(), which bottoms out at /tmp.
+//
+// This was argued three times before it was settled, and the first two answers were mine and
+// wrong. Round 28 flagged the hand-rolled `process.env.TMPDIR || '/tmp'` and asked for the
+// platform helper. Round 32 flagged the helper and asked to "redirect through a writable
+// test-specific location or TMPDIR"; I measured that os.tmpdir() already returns $TMPDIR when
+// set, declined it as a false positive on that basis, and recorded here that "if $TMPDIR is
+// unset AND /tmp is unwritable there is no third option a test file could choose". Round 33
+// raised it again — and the recorded claim was false. The decline answered the TMPDIR half of
+// the request and dropped the "writable test-specific location" half, which was the half with
+// substance: gstack-paths resolves TMP_ROOT to a project-local `.gstack/tmp` precisely "so we
+// never write to a system /tmp that may be read-only or shared" (its own comment). A third
+// option is exactly what production already has, so these tests were the only part of the
+// branch still assuming /tmp — in a suite whose subject is an adapter hardened for the case
+// where /tmp is read-only or absent.
+//
+// Writability is PROBED rather than assumed: a directory named by $TMPDIR is a claim, not a
+// capability, and a mkdir that throws at module load would fail the file before any assertion
+// runs — the exact failure mode being fixed.
+export function resolveTmpRoot(env: Record<string, string | undefined> = process.env): string {
+  const candidates = [env.TMPDIR, env.TMP, path.join(ROOT, '.gstack', 'tmp')];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      fs.mkdirSync(candidate, { recursive: true });
+      // Prove the write, don't infer it from the mkdir: an existing-but-read-only dir makes
+      // `mkdir -p` a no-op success.
+      fs.rmSync(fs.mkdtempSync(path.join(candidate, 'gstack-probe-')), { recursive: true, force: true });
+      return candidate;
+    } catch {
+      // Try the next candidate. The project-local floor is last and is inside the repo, which
+      // .gitignore already excludes, so a fallback leaves no tracked artefacts.
+    }
+  }
+  throw new Error('no writable temp root: set $TMPDIR to a writable directory');
+}
+const TMP_ROOT = resolveTmpRoot();
 
 // The default loop model is stated in THREE places and nothing reconciled them:
 //
@@ -57,12 +88,44 @@ describe('outside_voice_loop_model default is stated once, consistently', () => 
   });
 });
 
+describe('the suite resolves its own temp root the way production does', () => {
+  // Without this, the fallback is a branch no run ever takes on a normal box (where $TMPDIR or
+  // /tmp always works), so it could rot untouched and be discovered only in the read-only-/tmp
+  // environment it exists for — which is the one place nobody is watching a test suite.
+  test('an env naming no temp dir falls back to the project-local root', () => {
+    expect(resolveTmpRoot({})).toBe(path.join(ROOT, '.gstack', 'tmp'));
+  });
+
+  test('$TMPDIR is honoured when it is usable', () => {
+    const dir = fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-tmproot-'));
+    try {
+      expect(resolveTmpRoot({ TMPDIR: dir })).toBe(dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a named-but-unusable $TMPDIR falls through instead of throwing', () => {
+    // The parent is a FILE, so mkdir fails with ENOTDIR for any uid. A chmod-000 directory
+    // would not do: it stays writable for root, so the test would quietly pass by skipping the
+    // branch it means to exercise whenever the suite runs as root (CI containers, often).
+    const blocker = path.join(fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-tmproot-')), 'a-file');
+    fs.writeFileSync(blocker, '');
+    try {
+      expect(resolveTmpRoot({ TMPDIR: path.join(blocker, 'nested') }))
+        .toBe(path.join(ROOT, '.gstack', 'tmp'));
+    } finally {
+      fs.rmSync(path.dirname(blocker), { recursive: true, force: true });
+    }
+  });
+});
+
 describe('backend resolution refuses to guess', () => {
   function backend(value: string): { out: string; status: number } {
     // A hand-edited config is the case that matters: `gstack-config set` rejects an invalid
     // value, so the only way one reaches resolve_backend is by editing the file directly —
     // which the config header explicitly invites ("edit freely").
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-test-'));
+    const home = fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-ov-test-'));
     fs.mkdirSync(path.join(home, '.gstack'), { recursive: true });
     fs.writeFileSync(path.join(home, '.gstack', 'config.yaml'), `outside_voice_loop: ${value}\n`);
     const r = spawnSync('bash', [ADAPTER, 'backend', '--phase', 'loop'], {
@@ -87,7 +150,7 @@ describe('backend resolution refuses to guess', () => {
   });
 
   test('unset still resolves to codex, so an unconfigured install is unchanged', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-test-'));
+    const home = fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-ov-test-'));
     const r = spawnSync('bash', [ADAPTER, 'backend', '--phase', 'loop'], {
       env: { PATH: process.env.PATH, HOME: home, USERPROFILE: '' } as Record<string, string>,
       encoding: 'utf-8',
@@ -105,7 +168,7 @@ describe('the API key never travels across a redirect', () => {
   // raise instead, which is safety by accident. So the allowlist is worth exactly as much as
   // this refusal, and the refusal needs a test that actually performs the hop.
   test('a redirecting base URL is refused before the second request is made', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-redir-'));
+    const dir = fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-ov-redir-'));
     const marker = path.join(dir, 'leaked');
     fs.writeFileSync(
       path.join(dir, 'stub.py'),
@@ -171,7 +234,7 @@ describe('the findings fence tolerates what models actually emit', () => {
   // not recognised. A stricter fence buys nothing — the per-request NONCE is what authenticates
   // the block, not the absence of a trailing language hint.
   function parse(text: string): number | null {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-fence-'));
+    const dir = fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-ov-fence-'));
     const src = fs.readFileSync(path.join(ROOT, 'bin', 'gstack-outside-voice-request.py'), 'utf-8');
     const reLine = src.split('\n').slice(src.split('\n').findIndex((l) => l.startsWith('BLOCK_RE = re.compile('))).slice(0, 3).join('\n');
     const script = path.join(dir, 'p.py');
@@ -239,7 +302,7 @@ describe('the usage log never reports an unknown cost as zero', () => {
   // to feed: a cost comparison between a cheap loop and a frontier gate comes out backwards if
   // every frontier row sums to nothing. null cannot be summed by accident.
   function emit(args: string): Record<string, unknown>[] {
-    const state = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-log-'));
+    const state = fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-ov-log-'));
     const adapter = fs.readFileSync(ADAPTER, 'utf-8');
     const fn = adapter.slice(adapter.indexOf('log_usage() {'));
     const body = fn.slice(0, fn.indexOf('\n}\n') + 3);
@@ -303,7 +366,7 @@ describe('the base-url guard allowlists schemes rather than blocklisting http', 
   const REQUEST = path.join(ROOT, 'bin', 'gstack-outside-voice-request.py');
 
   function attempt(baseUrl: string): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-url-'));
+    const dir = fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-ov-url-'));
     const prompt = path.join(dir, 'p.txt');
     fs.writeFileSync(prompt, 'review this\n');
     const r = spawnSync('python3', [REQUEST], {
@@ -370,7 +433,7 @@ describe('probe enforces the request layer base-url rule rather than a copy of i
   // the only variable — otherwise a `misconfigured` could come from the model or the key and
   // the test would agree for the wrong reason.
   function probeVerdict(baseUrl: string): string {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-ov-probe-'));
+    const home = fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-ov-probe-'));
     fs.mkdirSync(path.join(home, '.gstack'), { recursive: true });
     fs.writeFileSync(path.join(home, '.gstack', 'config.yaml'), 'outside_voice_loop: openrouter\n');
     const r = spawnSync('bash', [ADAPTER, 'probe', '--phase', 'loop'], {
@@ -486,7 +549,7 @@ describe('the hosted backend finds Python under either name, but only Python 3',
   }
 
   function resolvedWith(shims: Record<string, string>): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-py-'));
+    const dir = fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-py-'));
     for (const [name, body] of Object.entries(shims)) {
       fs.writeFileSync(path.join(dir, name), body, { mode: 0o755 });
     }
@@ -619,7 +682,7 @@ describe('gstack-config list agrees with gstack-config get', () => {
   // returned "" and the tests failed against the code being correct — a fixture measuring its
   // own teardown rather than the tool.
   function withConfig(yaml: string, keys: string[] = []): { list: string; values: Record<string, string> } {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-list-'));
+    const home = fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-list-'));
     fs.mkdirSync(path.join(home, '.gstack'), { recursive: true });
     fs.writeFileSync(path.join(home, '.gstack', 'config.yaml'), yaml);
     const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: '' } as Record<string, string>;
@@ -683,7 +746,7 @@ describe('probe refuses a redirecting base URL, without doing I/O on the default
   });
 
   test('a redirecting CUSTOM url is refused', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-redir-'));
+    const dir = fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-redir-'));
     fs.writeFileSync(path.join(dir, 'srv.py'), [
       'from http.server import BaseHTTPRequestHandler, HTTPServer',
       'class R(BaseHTTPRequestHandler):',
@@ -737,7 +800,7 @@ describe('an oversized prompt is refused, not truncated', () => {
   // reviewer might have commented on and says so, while truncating the prompt drops the
   // instructions — including the findings contract that decides how severities are reported.
   function exec(promptBytes: number): { status: number; err: string } {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-prompt-'));
+    const dir = fs.mkdtempSync(path.join(TMP_ROOT, 'gstack-prompt-'));
     const f = path.join(dir, 'p.txt');
     fs.writeFileSync(f, 'x'.repeat(promptBytes));
     const r = spawnSync('bash', [ADAPTER, 'exec', '--phase', 'loop', '--prompt-file', f, '--repo-root', ROOT],
