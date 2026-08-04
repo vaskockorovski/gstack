@@ -568,6 +568,21 @@ describe('every adapter invocation carries a resolved effort, not a literal', ()
     expect(calls.length).toBe(3);
   });
 
+  // Five review rounds read a bare `_REVIEW_EFFORT=high` as a hard-coded literal. They were
+  // wrong that the override was missing and right that a static reader cannot see an override
+  // path existing only in a comment. Written as a validated branch, the xhigh path is visible
+  // in the code — and one flag replaces three independent re-decisions of the same rule, which
+  // is what let round 21 fix one site and leave two.
+  test.each(files)('%s: effort is derived from one validated _XHIGH flag', (_l, f) => {
+    const text = fs.readFileSync(f, 'utf-8');
+    // One flag per block (blocks are separate bash invocations), but the SAME shape each time.
+    expect((text.match(/^_XHIGH=no$/gm) ?? []).length).toBe(3);
+    expect((text.match(/case "\$_XHIGH" in yes\|no\)/g) ?? []).length).toBe(3);
+    // Both branches present at every site: the override is code, not prose.
+    expect((text.match(/if \[ "\$_XHIGH" = yes \]; then _REVIEW_EFFORT=xhigh; else _REVIEW_EFFORT=high; fi/g) ?? []).length).toBe(2);
+    expect((text.match(/if \[ "\$_XHIGH" = yes \]; then _OV_EFFORT=xhigh; else _OV_EFFORT=medium; fi/g) ?? []).length).toBe(1);
+  });
+
   test.each(files)('%s: no invocation hard-codes its effort', (_l, f) => {
     const text = fs.readFileSync(f, 'utf-8');
     expect(text).not.toMatch(/--effort (high|medium|low|xhigh)\b/);

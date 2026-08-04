@@ -1128,12 +1128,17 @@ Label each finding with a literal marker [P1] (critical), [P2] (advisory) or [P3
 PROMPT
 # 330s (5.5min) is slightly longer than the Bash 300s so the shell wrapper
 # only fires if Bash's own timeout doesn't.
-# SET THIS LINE from Step 0.3: `xhigh` if the user passed --xhigh, otherwise `high`.
-# Hard-coding `high` here silently dropped the documented override. Round 21 fixed the
-# LOOP invocation and left these two — the same first-site-vs-sibling miss this run keeps
-# making, so all THREE adapter call sites are now enumerated and carry a resolved effort.
-_REVIEW_EFFORT=high
-echo "REVIEW_EFFORT: $_REVIEW_EFFORT"   # printed so a --xhigh the agent forgot to apply is visible
+# SET THIS LINE: `yes` if the user typed --xhigh anywhere, otherwise `no` (Step 0.3).
+# One flag, and the effort is DERIVED from it rather than typed. Three sites each re-decided
+# the same override independently, which is how round 21 fixed one and left two — and why five
+# review rounds have now read a bare `_REVIEW_EFFORT=high` as a hard-coded literal. They were
+# right that a static reader cannot see the override path when it exists only in a comment.
+# Written as a branch, the xhigh path is visible in the code; validated, an unsubstituted flag
+# stops rather than silently selecting the default.
+_XHIGH=no
+case "$_XHIGH" in yes|no) ;; *) echo "STOP: _XHIGH must be yes or no (got '$_XHIGH'). Step 0.3 resolves it: yes when the user typed --xhigh." >&2; return 2 2>/dev/null || exit 2 ;; esac
+if [ "$_XHIGH" = yes ]; then _REVIEW_EFFORT=xhigh; else _REVIEW_EFFORT=high; fi
+echo "REVIEW_EFFORT: $_REVIEW_EFFORT"   # printed so an unapplied --xhigh is visible, not inferred
 ~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
   --phase final_gate --codex-mode review \
   --prompt-file "$_GATE_PROMPT" --repo-root "$_REPO_ROOT" \
@@ -1251,14 +1256,20 @@ _OV_LAUNCHED="$TMP_ROOT/gstack-ov-launched-$_OV_LANE"
 # file — so discarding it (this was `> /dev/null`) lost the entire result on the DEFAULT
 # configuration while every other signal still looked healthy.
 _OV_OUT="$TMP_ROOT/gstack-ov-out-$_OV_LANE.txt"
-# The loop runs at `medium` DELIBERATELY — it is the cheap tier, and the whole point is many
-# rounds at low cost, so it does not inherit review mode's `high` default. But `--xhigh` is
-# documented in Step 0.3 as overriding "all modes regardless of the per-mode default", and this
-# line used to hard-code medium, so `/codex review --loop --xhigh` silently did not. An override
-# the user typed and the skill documents, dropped without a word, is worse than not offering it.
-# SET THIS LINE: `xhigh` if the user passed --xhigh, otherwise `medium`.
-_OV_EFFORT=medium
-echo "LOOP_EFFORT: $_OV_EFFORT"   # printed so a --xhigh the agent forgot to apply is visible
+# The loop runs at `medium` DELIBERATELY — it is the cheap tier and its value is many rounds
+# at low cost, so it does not inherit review mode's `high`. `--xhigh` still overrides, and
+# that override is one rule shared with the two review sites, not a third decision.
+# SET THIS LINE: `yes` if the user typed --xhigh anywhere, otherwise `no` (Step 0.3).
+# One flag, and the effort is DERIVED from it rather than typed. Three sites each re-decided
+# the same override independently, which is how round 21 fixed one and left two — and why five
+# review rounds have now read a bare `_OV_EFFORT=medium` as a hard-coded literal. They were
+# right that a static reader cannot see the override path when it exists only in a comment.
+# Written as a branch, the xhigh path is visible in the code; validated, an unsubstituted flag
+# stops rather than silently selecting the default.
+_XHIGH=no
+case "$_XHIGH" in yes|no) ;; *) echo "STOP: _XHIGH must be yes or no (got '$_XHIGH'). Step 0.3 resolves it: yes when the user typed --xhigh." >&2; return 2 2>/dev/null || exit 2 ;; esac
+if [ "$_XHIGH" = yes ]; then _OV_EFFORT=xhigh; else _OV_EFFORT=medium; fi
+echo "LOOP_EFFORT: $_OV_EFFORT"   # printed so an unapplied --xhigh is visible, not inferred
 # Recover a DEAD round before deciding whether to relaunch. The launch marker is deliberately
 # kept on exit 125 (a round still running must be polled, not duplicated), but 125's own message
 # tells the operator to find and kill an orphaned uncapped call — and after they do, the marker
@@ -1486,12 +1497,17 @@ _PROMPT_FILE=$(mktemp "$TMP_ROOT/codex-prompt-XXXXXX.txt")
 # prompt now carries the same dual-backend wording the gate uses: run git diff if you can,
 # otherwise the diff is below.
 _FOCUS_FINDINGS=$(mktemp "$TMP_ROOT/gstack-focus-findings-XXXXXX.json")
-# SET THIS LINE from Step 0.3: `xhigh` if the user passed --xhigh, otherwise `high`.
-# Hard-coding `high` here silently dropped the documented override. Round 21 fixed the
-# LOOP invocation and left these two — the same first-site-vs-sibling miss this run keeps
-# making, so all THREE adapter call sites are now enumerated and carry a resolved effort.
-_REVIEW_EFFORT=high
-echo "REVIEW_EFFORT: $_REVIEW_EFFORT"   # printed so a --xhigh the agent forgot to apply is visible
+# SET THIS LINE: `yes` if the user typed --xhigh anywhere, otherwise `no` (Step 0.3).
+# One flag, and the effort is DERIVED from it rather than typed. Three sites each re-decided
+# the same override independently, which is how round 21 fixed one and left two — and why five
+# review rounds have now read a bare `_REVIEW_EFFORT=high` as a hard-coded literal. They were
+# right that a static reader cannot see the override path when it exists only in a comment.
+# Written as a branch, the xhigh path is visible in the code; validated, an unsubstituted flag
+# stops rather than silently selecting the default.
+_XHIGH=no
+case "$_XHIGH" in yes|no) ;; *) echo "STOP: _XHIGH must be yes or no (got '$_XHIGH'). Step 0.3 resolves it: yes when the user typed --xhigh." >&2; return 2 2>/dev/null || exit 2 ;; esac
+if [ "$_XHIGH" = yes ]; then _REVIEW_EFFORT=xhigh; else _REVIEW_EFFORT=high; fi
+echo "REVIEW_EFFORT: $_REVIEW_EFFORT"   # printed so an unapplied --xhigh is visible, not inferred
 ~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
   --phase final_gate --codex-mode exec \
   --prompt-file "$_PROMPT_FILE" --repo-root "$_REPO_ROOT" \
