@@ -47,6 +47,24 @@ _gstack_codex_version_check() {
     echo "WARN: Codex CLI $_ver has known stdin deadlock bugs. Run: npm install -g @openai/codex@latest"
     _gstack_codex_log_event "codex_version_warning"
   fi
+  # Web search moved to on-by-default in 0.124.0, and the skills dropped the explicit
+  # `--enable web_search_cached` because its deprecation warning crowded out real errors —
+  # a credits failure hid behind it for a whole round. On an OLDER CLI that flag was what
+  # turned search ON, so dropping it silently disables search for prompts that reason about
+  # competitors, market risk or external docs. Say so rather than let it be silent: the
+  # removal is deliberate, its cost on old installs is not something to discover later.
+  #
+  # NOTE:, not WARN:. The existing contract — asserted by codex-hardening's anchored-regex
+  # tests — is that WARN: means THIS VERSION IS BUGGY, and 0.116 or 0.121 are not. A version
+  # that merely lacks a capability is a different statement, and folding the two together
+  # both broke those tests and would have taught the reader that WARN: means less than it does.
+  local _maj _min
+  _maj=$(printf '%s' "$_ver" | grep -oE '[0-9]+\.[0-9]+' | head -1 | cut -d. -f1)
+  _min=$(printf '%s' "$_ver" | grep -oE '[0-9]+\.[0-9]+' | head -1 | cut -d. -f2)
+  if [ -n "$_min" ] && [ "${_maj:-0}" -eq 0 ] && [ "$_min" -lt 124 ]; then
+    echo "NOTE: Codex CLI $_ver predates 0.124, where web search became on-by-default. gstack no longer passes --enable web_search_cached, so searches are OFF on this version. Run: npm install -g @openai/codex@latest"
+    _gstack_codex_log_event "codex_websearch_disabled_old_cli"
+  fi
 }
 
 # --- Timeout wrapper --------------------------------------------------------

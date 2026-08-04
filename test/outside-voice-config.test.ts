@@ -410,6 +410,14 @@ describe('probe enforces the request layer base-url rule rather than a copy of i
     ['file', 'file:///etc/passwd'],
     ['plain http remote', 'http://evil.com/v1'],
     ['https on loopback', 'https://127.0.0.1:8080/v1'],
+    // The allowlist was three literal strings, which refused the rest of 127.0.0.0/8 — both of
+    // these are ordinary choices for a local stub and were rejected as remote. A pattern
+    // standing in for a property, the same shape as the glob this file already replaced once.
+    ['other loopback in 127/8', 'http://127.0.0.2:8080/v1'],
+    ['debian-style loopback', 'http://127.0.1.1:8080/v1'],
+    // Widening the range must not widen what it lets through: a private address is not
+    // loopback, and the traffic would leave the machine with the key on it.
+    ['private but NOT loopback', 'http://10.0.0.1/v1'],
   ])('probe and the request layer agree on %s', (_label, url) => {
     const refused = requestRefuses(url as string);
     expect(probeVerdict(url as string)).toBe(refused ? 'misconfigured' : 'ready');

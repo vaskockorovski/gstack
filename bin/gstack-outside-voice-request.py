@@ -18,6 +18,7 @@ Exit codes THIS FILE produces (the calling shell adds its own — 2 refused inpu
      tell "the reviewer could not be parsed" from "the reviewer could not be reached", and so
      that neither can ever be mistaken for "the reviewer found nothing".
 """
+import ipaddress
 import json
 import os
 import re
@@ -26,6 +27,27 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+
+
+def _is_loopback(host):
+    """Is this host unambiguously the local machine? Parse it; do not match three literals.
+
+    The allowlist was the strings 127.0.0.1 / localhost / ::1, which refuses the rest of
+    127.0.0.0/8 — 127.0.0.2 and 127.0.1.1 are ordinary choices for a local stub, and the
+    documented "http on loopback for testing" path rejected them as remote. Same shape as the
+    glob this file already replaced once: a pattern standing in for a property.
+
+    Names are NOT resolved, deliberately. Only the literal `localhost` is accepted, because
+    resolving an arbitrary name here would make the guard depend on DNS — and a name that
+    resolves to loopback at check time can resolve elsewhere at request time, which is the
+    rebinding shape. The key rides on this decision, so it stays answerable from the URL alone.
+    """
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _validate_base_url(base_url):
@@ -67,7 +89,7 @@ def _validate_base_url(base_url):
     if scheme == "https":
         return True, ""
     if scheme == "http":
-        if (split.hostname or "") in ("127.0.0.1", "localhost", "::1"):
+        if _is_loopback(split.hostname or ""):
             return True, ""
         return False, ("refusing to send the API key over plain http to %r — use https, "
                        "or point at loopback for testing" % (split.hostname or base_url))

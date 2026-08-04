@@ -1014,7 +1014,9 @@ This whole step is skipped when Step 0.4 reported `NEEDS_CODEX: no`. Otherwise, 
 output contains `AUTH_FAILED`, stop and tell the user:
 "No Codex authentication found. Run `codex login` or set `$CODEX_API_KEY` / `$OPENAI_API_KEY`, then re-run this skill."
 
-If the version check printed a `WARN:` line, pass it through to the user verbatim
+If the version check printed a `WARN:` or `NOTE:` line, pass it through to the user verbatim
+(`WARN:` means the installed CLI is known-buggy; `NOTE:` means it merely lacks a capability
+this skill assumes — currently, web search below 0.124)
 (non-blocking — Codex may still work, but the user should upgrade).
 
 The probe multi-signal auth logic accepts: `$CODEX_API_KEY` set, `$OPENAI_API_KEY`
