@@ -195,6 +195,16 @@ resolve_backend() {
   esac
 }
 
+# --- remediation text -------------------------------------------------------
+
+unusable_config_message() {
+  # ONE statement of what makes a configured openrouter phase unrunnable and which keys to
+  # check. `exec` dies with it and `backend` warns with it; two wordings of one remediation is
+  # how a pair drifts until one of them names a key that no longer exists — and a remediation
+  # message is only as good as the key it names.
+  printf '%s' "the ${1:-openrouter} backend is configured but cannot run. Check \`gstack-config get outside_voice_loop_model\` — one key, used for BOTH phases, and blank refuses rather than guessing — and \$GSTACK_OUTSIDE_VOICE_BASE_URL, which must be https, or http on loopback."
+}
+
 # --- readiness probe --------------------------------------------------------
 # Mirrors the four-state contract of the old codexPreflight so callers branch the
 # same way: disabled | not_installed | not_authed | ready — plus a fifth,
@@ -586,7 +596,7 @@ cmd_exec() {
       # The first version of this message branched on phase and named that key for final_gate,
       # inventing a setting the operator would have searched for and never found: a remediation
       # message is only as good as the key it names, and a wrong key is worse than a vague one.
-      die "the $backend backend is configured but cannot run. Check \`gstack-config get outside_voice_loop_model\` — one key, used for BOTH phases, and blank refuses rather than guessing — and \$GSTACK_OUTSIDE_VOICE_BASE_URL, which must be https, or http on loopback. Refusing to start a round that would fail after the pre-flight gate." ;;
+      die "$(unusable_config_message "$backend") Refusing to start a round that would fail after the pre-flight gate." ;;
     # Unreachable today — codex_reviews=disabled and a disabled backend both return earlier —
     # but enumerated so the branch table stays total. A state probe can emit and this case does
     # not name is a silent fall-through to preflight_gate, which is the bug being fixed here.
@@ -650,20 +660,39 @@ exec_codex() {
   # review mode exists because it keeps Codex's own review prompt tuning, which is most of what
   # the frontier gate is buying. Routing the gate through `codex exec` would have been a quiet
   # downgrade dressed up as a refactor.
+  # Web search. Dropping `--enable web_search_cached` outright was a REGRESSION for installs
+  # below 0.124, where that flag is what turns search on — prompts reasoning about competitors
+  # or external docs silently fell back to model priors. It is passed again, but only where it
+  # is still the mechanism: `_gstack_codex_search_flag` is empty on 0.124+, so the deprecation
+  # warning that once hid a credits error for a whole round never returns.
+  #
+  # The version rule is NOT re-implemented here. It lives once in gstack-codex-probe and is
+  # sourced, because two copies of one fact is precisely what this file has been fixed for
+  # before. Sourcing is safe: that file defines functions and executes nothing at source time
+  # (its own hygiene contract). Absent or unreadable, the flag stays empty and the call still
+  # runs — a missing helper must not take the review down with it.
+  _ov_search_flag=""
+  if [ -r "$_SELF_DIR/gstack-codex-probe" ]; then
+    . "$_SELF_DIR/gstack-codex-probe" 2>/dev/null || true
+    command -v _gstack_codex_search_flag >/dev/null 2>&1 \
+      && _ov_search_flag=$(_gstack_codex_search_flag)
+  fi
+  # $_ov_search_flag is expanded UNQUOTED at both call sites below: it must become two
+  # arguments or none, and it only ever holds a literal this repo controls.
   if [ "$codex_mode" = "review" ]; then
     # No --base: current Codex rejects a custom prompt and --base together, so the diff scope
     # travels in the prompt text (same shape the skill has always used).
     ( cd "$repo_root" && with_timeout "$timeout_s" codex review - \
-        -c "model_reasoning_effort=\"$effort\"" < "$prompt_file" ) || rc=$?
+        -c "model_reasoning_effort=\"$effort\"" $_ov_search_flag < "$prompt_file" ) || rc=$?
     if [ "$rc" -eq 124 ]; then log_usage codex "" "$phase" "$label" unknown unknown timeout
     elif [ "$rc" -ne 0 ]; then log_usage codex "" "$phase" "$label" unknown unknown "error_$rc"
     else log_usage codex "" "$phase" "$label" unknown unknown ok
     fi
     return "$rc"
   fi
-  # Flags mirror the previous inline call sites exactly, minus the deprecated
-  # `--enable web_search_cached` (codex 0.124.0+: web search is on by default,
-  # and its deprecation warning crowded out real errors — see VAS-1926).
+  # Flags mirror the previous inline call sites exactly, including web search — passed via
+  # $_ov_search_flag above only on CLIs below 0.124, where it is still the mechanism rather
+  # than a deprecation warning (see VAS-1926 for why it is not passed unconditionally).
   # The prompt goes in on STDIN, not as argv. `codex exec "$(cat "$f")"` puts the entire prompt
   # into one argument, and a prompt carrying an inlined diff can exceed ARG_MAX — where the
   # failure is not a clean error but a truncated or rejected exec, i.e. a review of less than
@@ -675,7 +704,7 @@ exec_codex() {
   # one-character prompt rather than meaning "read stdin".
   with_timeout "$timeout_s" codex exec \
     -C "$repo_root" -s read-only \
-    -c "model_reasoning_effort=\"$effort\"" < "$prompt_file" || rc=$?
+    -c "model_reasoning_effort=\"$effort\"" $_ov_search_flag < "$prompt_file" || rc=$?
   if [ "$rc" -eq 124 ]; then
     log_usage codex "" "$phase" "$label" unknown unknown timeout
   elif [ "$rc" -ne 0 ]; then
@@ -882,7 +911,22 @@ case "$_CMD" in
   exec) cmd_exec "$@" ;;
   backend)
     [ "${1:-}" = "--phase" ] || die "usage: gstack-outside-voice backend --phase <loop|final_gate>"
-    resolve_backend "${2:?}"; echo ""
+    _resolved="$(resolve_backend "${2:?}")"
+    printf '%s\n' "$_resolved"
+    # codex/SKILL.md sends operators here for "the precise message — it names the key", and it
+    # names TWO causes: this phase's key holding an unrecognised value, and
+    # outside_voice_loop_model being blank. Only the first was ever visible from this command —
+    # for the second, `resolve_backend` correctly returned `openrouter` and the operator was
+    # handed one word that diagnosed nothing, having been told it would name the key. An
+    # artefact that names its own diagnostic is making a checkable claim; this makes it true.
+    #
+    # STDOUT stays exactly one word: preflight captures it as the backend name, and anything
+    # extra there would be read as a backend. The diagnosis goes to STDERR — the channel this
+    # command already uses to explain an unrecognised value, and which preflight deliberately
+    # does not suppress for precisely that reason.
+    if [ "$_resolved" = "openrouter" ] && [ "$(probe "${2:?}" no)" = "misconfigured" ]; then
+      printf 'gstack-outside-voice: %s\n' "$(unusable_config_message "$_resolved")" >&2
+    fi
     ;;
   probe)
     _pexp=no
