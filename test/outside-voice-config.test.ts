@@ -4,6 +4,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
+// Temp dirs use os.tmpdir() deliberately, and this has now been argued BOTH ways by review.
+// Round 28 flagged `process.env.TMPDIR || '/tmp'` and asked for the platform helper; round 32
+// flagged the helper and asked to "redirect through TMPDIR". Measured: os.tmpdir() RETURNS
+// $TMPDIR when it is set (TMPDIR=/var/tmp -> /var/tmp), so the second request is precisely what
+// the helper already does, and reverting would restore the hand-rolled form the first round
+// objected to. If $TMPDIR is unset AND /tmp is unwritable there is no third option a test file
+// could choose — the runner itself would have nowhere to work. Left as is, on purpose.
 const ROOT = path.resolve(import.meta.dir, '..');
 const ADAPTER = path.join(ROOT, 'bin', 'gstack-outside-voice');
 const CONFIG = path.join(ROOT, 'bin', 'gstack-config');

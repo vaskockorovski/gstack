@@ -167,7 +167,14 @@ _OV_BACKEND=$(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase $
 # broken helper sent the user to install a client that was already installed, while the real
 # error went to /dev/null. Probe reports its states on stdout and exits 0, so keep the failure
 # as its own state and keep the stderr that explains it.
-_OV_PROBE_ERR=$(mktemp "\${TMPDIR:-/tmp}/gstack-probe-err-XXXXXX")
+# Honour the RESOLVED temp root. Step 0.2 resolves $TMP_ROOT through gstack-paths precisely
+# so a read-only or absent /tmp still works, and this line — added two rounds ago — then
+# hard-coded /tmp again, so the probe would abort before it could report the very
+# not_installed / not_authed fallback it exists to produce (no backticks in this comment:
+# it lives inside a TS template literal, where a backtick ENDS the string). TMPDIR then
+# /tmp remain as fallbacks because this preflight also renders into skills that never
+# resolved TMP_ROOT.
+_OV_PROBE_ERR=$(mktemp "\${TMP_ROOT:-\${TMPDIR:-/tmp}}/gstack-probe-err-XXXXXX")
 ${m}=$(~/.claude/skills/gstack/bin/gstack-outside-voice probe --phase ${opts.phase} 2>"$_OV_PROBE_ERR") || ${m}=probe_failed
 [ "$${m}" = probe_failed ] && { echo "PROBE FAILED — its own stderr follows:"; cat "$_OV_PROBE_ERR"; }
 rm -f "$_OV_PROBE_ERR"
