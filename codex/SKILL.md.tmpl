@@ -61,7 +61,9 @@ After this, every subsequent bash block in this skill uses `"$PLAN_ROOT"` and
 Parse the user's input to determine which mode to run. **Settle this before the codex checks
 below** — Step 0.4 needs the resolved mode to pick the phase whose backend it should test, and
 case 3 resolves the mode by asking the user, so nothing earlier can know it. Carry the result
-forward: review → `loop` if `--loop` else `final_gate`; challenge/consult/plan → `none`.
+forward using the table in the next section — it is the authority, and it is not
+`loop`-or-`final_gate` any more: a plain review in a `claude-fleet-config` worktree resolves to
+`auto`. Challenge/consult/plan remain `none`.
 
 1. `/codex review` or `/codex review <instructions>` — **Review mode** (Step 2A)
 1a. `/codex review --loop` — **Review mode, loop phase** (Step 2A, loop path): runs ONE
@@ -92,8 +94,18 @@ standing in:
 ```bash
 # The REMOTE, not the directory name: fleet lanes live in worktrees called wt-2402, cfc-wt-1885,
 # scratchpad/wt-renew and so on, so a basename test answers "no" for most real cfc lanes.
-_REVIEW_REPO=$(git remote get-url origin 2>/dev/null | sed 's/\.git$//' | awk -F'[/:]' '{print $NF}')
+#
+# OWNER AND NAME, not the last path segment. Matching only the segment opts in ANY fork or
+# unrelated remote that happens to be called claude-fleet-config — a stranger's clone would
+# silently start running loop-then-gate rounds on a rollout scoped to one repository. The
+# scoping is the whole safety property here, so it fails CLOSED: anything that does not match
+# exactly keeps the explicit phase.
+_REVIEW_REPO=$(git remote get-url origin 2>/dev/null \
+  | sed -e 's/\.git$//' -e 's#^git@\([^:]*\):#https://\1/#' \
+  | awk -F/ '{ if (NF>=2) printf "%s/%s", $(NF-1), $NF }')
 echo "REVIEW_REPO: ${_REVIEW_REPO:-unknown}"
+# The one repository the VAS-2402 rollout covers. Widening this is a separate, explicit decision.
+_REVIEW_AUTO_REPO="vaskockorovski/claude-fleet-config"
 ```
 
 **`auto` replaces the typed flag that VAS-2371's rollout ran on.** Under that scaffold a cfc session
@@ -207,7 +219,17 @@ esac
 # So resolve it to a real phase FIRST, and keep the resolved value: every follower below reads it.
 _OV_RESOLVED_PHASE="$_OV_PHASE"
 if [ "$_OV_PHASE" = "auto" ]; then
-  _OV_RESOLVED_PHASE=$(~/.claude/skills/gstack/bin/gstack-outside-voice resolve-phase 2>/dev/null) || _OV_RESOLVED_PHASE=""
+  # THE SAME QUESTION THE EXEC WILL ASK. resolve-phase defaults to origin/main and to
+  # non-explicit mode; the review below runs `exec --phase auto --explicit --base origin/<base>`.
+  # Omitting either flag lets this resolution disagree with the phase the adapter actually picks —
+  # on any branch whose base is not main, or when codex_reviews=disabled and the user asked for a
+  # review explicitly. The two would then diverge silently, and Step 0.4 would probe the wrong
+  # backend: skipping the binary and auth checks a real gate round needs, or refusing a hosted
+  # loop that was allowed. Two producers that answer differently is the defect this whole change
+  # exists to remove, so they are given identical inputs.
+  _OV_RESOLVED_PHASE=$(~/.claude/skills/gstack/bin/gstack-outside-voice resolve-phase \
+    --explicit --base "origin/<base>" --repo-root "$(git rev-parse --show-toplevel 2>/dev/null)" \
+    2>/dev/null) || _OV_RESOLVED_PHASE=""
   case "$_OV_RESOLVED_PHASE" in
     loop|final_gate) ;;
     *) echo "STOP: --phase auto could not be resolved (resolve-phase returned '${_OV_RESOLVED_PHASE:-<nothing>}'). This is NOT a clean round and NOT a reason to guess a phase: resolve-phase reads the round ledger, so a failure here means the ledger is unreadable and the mode cannot decide anything. Fix that, or name the phase explicitly." >&2
@@ -806,12 +828,19 @@ if [ "$_OV_EXIT" = "0" ] && [ -s "$_OV_FINDINGS" ]; then
   else
     echo "BAR: loop — p1 > 0 OR p2 > 0 means the loop CONTINUES. A clean loop round is NOT convergence; only the gate declares that."
   fi
+# ⚠ THE LABEL IS NOT PRINTED WHEN THERE IS NO BLOCK, and that is a correctness rule rather than
+# tidiness. Step 4 says that if a `*_FINDINGS_JSON:` line was printed the verdict comes from that
+# block AND FROM NOTHING ELSE — so emitting the label with a `<none …>` payload tells the grader to
+# read a block that does not exist, and simultaneously removes its fallback to the [P1] markers in
+# the prose. A round with no structured findings would then grade as a structured clean round.
+# The previous shape got away with this because the label was a constant; now that it can say
+# GATE_FINDINGS_JSON, a `<none>` payload under that label is a false clean gate.
 elif [ "$_OV_EXIT" = "0" ]; then
-  echo "$_OV_LABEL: <none — backend was codex; read its severities from the review output above>"
+  echo "NO_FINDINGS_BLOCK — backend was codex, which owns its own output format. Read severities from the [P1]/[P2] markers in the review output above; there is no JSON block to grade."
 elif [ "$_OV_EXIT" = "125" ]; then
-  echo "$_OV_LABEL: <none yet — the round is still running; the file belongs to that call>"
+  echo "NO_FINDINGS_BLOCK — the round is STILL RUNNING; the file belongs to that call. Not a verdict either way."
 else
-  echo "$_OV_LABEL: <none — the round FAILED (exit $_OV_EXIT). NOT a clean round; nothing was established>"
+  echo "NO_FINDINGS_BLOCK — the round FAILED (exit $_OV_EXIT). NOT a clean round; nothing was established."
 fi
 # Not on 125: a still-running call is about to write this file, and deleting it would race
 # the writer and destroy the round's only machine-readable result.

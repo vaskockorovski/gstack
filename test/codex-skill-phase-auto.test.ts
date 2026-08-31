@@ -114,6 +114,42 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     expect(t).not.toMatch(/outside_voice_phase|_cfg\s+phase/);
   });
 
+  // ── THE TWO PRODUCERS MUST BE ASKED THE SAME QUESTION ────────────────────────────────────────
+  // resolve-phase defaults to origin/main and non-explicit; the review runs
+  // `exec --phase auto --explicit --base origin/<base>`. Omit either flag and the pre-call
+  // resolution can disagree with the phase the adapter actually picks — on any branch whose base
+  // is not main, or when codex_reviews=disabled and the user asked explicitly. The adapter's own
+  // note says the two "call one function with one set of inputs"; this asserts the skill supplies
+  // the same inputs, which is the half the adapter cannot enforce.
+  test.each(FILES)('%s: resolve-phase is given the same inputs as the exec', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/resolve-phase[\s\S]{0,200}?--explicit[\s\S]{0,200}?--base "origin\/<base>"/);
+    expect(t).toMatch(/resolve-phase[\s\S]{0,300}?--repo-root/);
+  });
+
+  // ── A LABEL IS NEVER PRINTED WITHOUT A BLOCK ─────────────────────────────────────────────────
+  // Step 4 reads a printed `*_FINDINGS_JSON:` line as "the verdict comes from this block and
+  // nothing else". Printing it with a `<none …>` payload therefore points the grader at a block
+  // that does not exist AND removes its fallback to the [P1] markers — so a round with no
+  // structured findings grades as a structured clean round. Survivable while the label was a
+  // constant; a false CLEAN GATE once it can say GATE_FINDINGS_JSON.
+  test.each(FILES)('%s: no findings label is emitted when there is no block', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toContain('NO_FINDINGS_BLOCK');
+    // The label variable must never be printed next to a "<none" payload.
+    expect(t).not.toMatch(/\$_OV_LABEL: <none/);
+  });
+
+  // ── SCOPE FAILS CLOSED ───────────────────────────────────────────────────────────────────────
+  // Matching the last path segment opts in any fork called claude-fleet-config. The rollout is
+  // scoped to one repository, so the comparison carries owner AND name.
+  test.each(FILES)('%s: the repo match is owner/name, not a bare segment', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toContain('vaskockorovski/claude-fleet-config');
+    // A bare `{print $NF}` extraction is the segment-only form this replaced.
+    expect(t).not.toMatch(/get-url origin[\s\S]{0,200}?awk -F'\[\/:\]' '\{print \$NF\}'/);
+  });
+
   // ── EXIT 6 stays enumerated on this path ─────────────────────────────────────────────────────
   // The adapter grew `blocked` with the VAS-2373 redesign; a lane that cannot converge must report
   // as blocked, never as an unexpected failure and never as a clean round.
