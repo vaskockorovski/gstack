@@ -884,6 +884,15 @@ fi
 # phase than the probe predicted. Labelling from the probe would then misstate the bar and suppress
 # GATE_BACKEND for the round that actually ran. The adapter prints `phase resolved to '<phase>'` on
 # every auto call, which is the only reading taken at the moment the round began.
+# ⚠ NONE OF THIS IS INTERPRETED UNTIL THE ROUND HAS FINISHED. The adapter prints its resolution
+# and its promotion notice as it goes, so on a 125 (poll expired, child still running) both lines
+# can already be on stderr while the gate half is still executing. Reading them then would announce
+# AUTO PROMOTED and emit GATE_BACKEND for a gate that has not produced anything, and step 4 would
+# grade the loop half's output as the gate's — a round that did not finish, reported as one that
+# did, which is the whole class this file exists to close.
+if [ "$_OV_EXIT" = "125" ]; then
+  echo "PHASE_THAT_RAN: unknown — the round has NOT finished. Any promotion notice above belongs to a gate half that is still executing; re-run the poll block. Nothing here is a verdict."
+else
 _OV_RAN_PHASE="$_OV_RESOLVED_PHASE"
 _OV_ANNOUNCED=$(sed -n "s/.*phase resolved to '\([a-z_]*\)'.*/\1/p" "$TMPERR" 2>/dev/null | tail -1)
 if [ -n "$_OV_ANNOUNCED" ]; then
@@ -894,7 +903,8 @@ if grep -q 'running the final_gate round now' "$TMPERR" 2>/dev/null; then
   _OV_RAN_PHASE=final_gate
   echo "AUTO PROMOTED: the loop reported no P1 and no P2, so the gate ran in the same invocation. The findings below are the GATE's."
 fi
-echo "PHASE_THAT_RAN: $_OV_RAN_PHASE"
+fi
+[ "$_OV_EXIT" = "125" ] || echo "PHASE_THAT_RAN: $_OV_RAN_PHASE"
 # One producer, two labels. `_OV_LABEL` is derived here and nowhere else.
 if [ "$_OV_RAN_PHASE" = "final_gate" ]; then _OV_LABEL=GATE_FINDINGS_JSON; else _OV_LABEL=OV_FINDINGS_JSON; fi
 # THE COMPANION MARKER TRAVELS WITH THE LABEL. Step 4 keys DEGRADED-GATE reporting off
@@ -903,7 +913,7 @@ if [ "$_OV_RAN_PHASE" = "final_gate" ]; then _OV_LABEL=GATE_FINDINGS_JSON; else 
 # rather than as a plain PASS. Emitting the gate LABEL without the gate BACKEND makes a weaker
 # review look like a full one, which is the same false-clean shape as the `<none>` payload fixed
 # one round earlier: half a contract is not a contract.
-if [ "$_OV_RAN_PHASE" = "final_gate" ]; then
+if [ "$_OV_EXIT" != "125" ] && [ "$_OV_RAN_PHASE" = "final_gate" ]; then
   echo "GATE_BACKEND: $(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase final_gate 2>/dev/null || echo unknown)"
 fi
 if [ "$_OV_EXIT" = "0" ] && [ -s "$_OV_FINDINGS" ]; then

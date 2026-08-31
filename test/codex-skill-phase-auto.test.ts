@@ -243,6 +243,17 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     expect(t).toMatch(/BAR: loop` was printed[\s\S]{0,300}?loop \*\*CONTINUES\*\*/);
   });
 
+  // ── NOTHING IS INTERPRETED UNTIL THE ROUND FINISHES ──────────────────────────────────────────
+  // The adapter prints its resolution and its promotion notice AS IT GOES, so on a 125 (poll
+  // expired, child still running) both can be on stderr while the gate half is still executing.
+  // Reading them then announces a promoted gate that has produced nothing, and step 4 grades the
+  // loop half's output as the gate's — a round that did not finish, reported as one that did.
+  test.each(FILES)('%s: a still-running round announces no phase, label or backend', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/_OV_EXIT" = "125" \]; then[\s\S]{0,300}?PHASE_THAT_RAN: unknown/);
+    expect(t).toMatch(/_OV_EXIT" != "125" \] && \[ "\$_OV_RAN_PHASE" = "final_gate"/);
+  });
+
   // ── EXIT 6 stays enumerated on this path ─────────────────────────────────────────────────────
   // The adapter grew `blocked` with the VAS-2373 redesign; a lane that cannot converge must report
   // as blocked, never as an unexpected failure and never as a clean round.
