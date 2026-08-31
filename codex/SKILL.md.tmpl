@@ -190,7 +190,7 @@ per-mode default below. Otherwise, use the per-mode defaults:
 # (four noted below, plus codex r16 P1). The self-validating check on the next lines is what
 # makes an unsubstituted placeholder fail LOUDLY instead of silently, which is the whole point;
 # it firing is the mechanism working, not proof that nobody fills the value in.
-_OV_PHASE="<<SET-ME: loop | final_gate | none>>"   # ← SUBSTITUTE THIS WHOLE STRING
+_OV_PHASE="<<SET-ME: loop | final_gate | auto | none>>"   # ← SUBSTITUTE THIS WHOLE STRING
 # A placeholder that VALIDATES ITSELF, checked BEFORE anything reads it.
 #
 # This was `_OV_PHASE=` — blank, with the obligation to fill it stated only in a comment. That
@@ -332,7 +332,21 @@ custom prompt and `--base <branch>` together** (the two arguments are mutually
 exclusive at argv level), so put the base diff scope in the prompt instead of
 passing `--base`. Two paths:
 
-**Default path (no custom user instructions):** the **final-gate** phase. It runs
+**Default path (no custom user instructions).** ⚠ **FIRST, DECIDE WHETHER THIS REPO TAKES `auto`
+— and if it does, THIS BLOCK DOES NOT RUN.** A plain `/codex review` in the rollout repository is
+the whole point of VAS-2402: it must enter the loop-then-gate lane, not the inline gate below.
+Running this block there would skip the auto lane entirely, along with its fused budget and its
+phase-derived reporting, and the change would be unreachable in the one repo it exists for.
+
+```bash
+_REVIEW_ROUTE=gate
+[ "${_REVIEW_REPO:-}" = "${_REVIEW_AUTO_REPO:-}" ] && [ -n "${_REVIEW_REPO:-}" ] && _REVIEW_ROUTE=auto
+echo "REVIEW_ROUTE: $_REVIEW_ROUTE"
+```
+
+**If `REVIEW_ROUTE: auto`, skip to the loop path below and run it with `_OV_PHASE=auto`.** It
+already carries the backgrounded poller the fused budget needs. **If `REVIEW_ROUTE: gate`, continue
+here** — the **final-gate** phase, unchanged. It runs
 through the outside-voice adapter so the backend is resolved from
 `outside_voice_gate` — which defaults to `codex`, so an unconfigured install
 behaves exactly as it always has. The adapter invokes `codex review` (not
@@ -368,8 +382,13 @@ loop round or quietly weakens the gate.
 # regardless, the call fails, and the failure is reported as a codex error rather than as the
 # configuration problem the probe already identified. The loop path guards at runtime; this one
 # relied on the reader doing it, and two review rounds reported it as a defect for that reason.
+# THE GUARD IS CODE, NOT PROSE. The paragraph above tells a reader to skip this block on the auto
+# route; this line is what makes skipping it actually happen, because "a step written beside a code
+# block instead of inside it does not get run" is a lesson this file already carries.
 _GATE_RAN=no
-if [ "$_GATE_MODE" != "ready" ]; then
+if [ "${_REVIEW_ROUTE:-gate}" = "auto" ]; then
+  echo "GATE SKIPPED — this repo routes a plain review through --phase auto. The loop-then-gate lane below runs it, and the gate round happens THERE, in the same invocation, when the loop reports clean. Nothing has been reviewed by this block and it must not be read as a verdict."
+elif [ "$_GATE_MODE" != "ready" ]; then
   # NOT `exit 0`. Exiting zero is the shell's word for "this succeeded", and a caller that
   # reads it cannot distinguish "the gate found nothing" from "the gate never ran" — the same
   # absence-read-as-a-verdict this skill has closed in four other places. Set a flag the
@@ -818,6 +837,15 @@ fi
 echo "PHASE_THAT_RAN: $_OV_RAN_PHASE"
 # One producer, two labels. `_OV_LABEL` is derived here and nowhere else.
 if [ "$_OV_RAN_PHASE" = "final_gate" ]; then _OV_LABEL=GATE_FINDINGS_JSON; else _OV_LABEL=OV_FINDINGS_JSON; fi
+# THE COMPANION MARKER TRAVELS WITH THE LABEL. Step 4 keys DEGRADED-GATE reporting off
+# `GATE_BACKEND:` — a gate that ran on a hosted backend is diff-scoped, so defects in files this
+# branch did not touch were never discoverable, and it must be reported as PASS (degraded gate)
+# rather than as a plain PASS. Emitting the gate LABEL without the gate BACKEND makes a weaker
+# review look like a full one, which is the same false-clean shape as the `<none>` payload fixed
+# one round earlier: half a contract is not a contract.
+if [ "$_OV_RAN_PHASE" = "final_gate" ]; then
+  echo "GATE_BACKEND: $(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase final_gate 2>/dev/null || echo unknown)"
+fi
 if [ "$_OV_EXIT" = "0" ] && [ -s "$_OV_FINDINGS" ]; then
   echo "$_OV_LABEL: $(cat "$_OV_FINDINGS")"
   echo "Severity counts come from this block; the file:line detail is in the review output above."

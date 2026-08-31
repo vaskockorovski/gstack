@@ -150,6 +150,26 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     expect(t).not.toMatch(/get-url origin[\s\S]{0,200}?awk -F'\[\/:\]' '\{print \$NF\}'/);
   });
 
+  // ── THE DEFAULT PATH ACTUALLY YIELDS TO auto ─────────────────────────────────────────────────
+  // The routing table is worthless if the plain-review launcher still runs the inline gate: the
+  // change would be unreachable in the one repo it exists for, while every test above still passed.
+  // Asserted as CODE, not prose — a step written beside a code block instead of inside it does not
+  // get run, which this file already records at cost.
+  test.each(FILES)('%s: the inline gate is skipped when the route is auto', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toContain('_REVIEW_ROUTE');
+    expect(t).toMatch(/_REVIEW_ROUTE:-gate\}" = "auto" \]; then[\s\S]{0,200}?GATE SKIPPED/);
+  });
+
+  // ── THE GATE MARKER TRAVELS WITH THE GATE LABEL ──────────────────────────────────────────────
+  // Step 4 keys degraded-gate reporting off GATE_BACKEND. A promoted gate on a hosted backend is
+  // diff-scoped, so it must report as PASS (degraded gate); emitting the label without the backend
+  // makes a weaker review look like a full one.
+  test.each(FILES)('%s: a promoted gate round emits GATE_BACKEND too', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/_OV_RAN_PHASE" = "final_gate" \]; then[\s\S]{0,400}?GATE_BACKEND:/);
+  });
+
   // ── EXIT 6 stays enumerated on this path ─────────────────────────────────────────────────────
   // The adapter grew `blocked` with the VAS-2373 redesign; a lane that cannot converge must report
   // as blocked, never as an unexpected failure and never as a clean round.
