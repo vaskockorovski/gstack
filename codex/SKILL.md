@@ -2101,23 +2101,41 @@ every plain review ended at the gate. Under `auto` a plain review can also stop 
 not run at all — and flattening either into `GATE: PASS` reports a lane as converged when the gate
 has not spoken. Use the shape that matches the `BAR:` line the round printed:
 
+⚠ **THE OUTCOME SET DIFFERS BETWEEN THE TWO PATHS, because `auto` PROMOTES IN-PROCESS.** A clean
+loop under `auto` does not end the invocation and wait to be asked again — the adapter launches the
+gate immediately, in the same call. So "the loop came back clean" is **not a finished state** on
+that path, and reporting it as one presents an invocation whose gate is still running as a
+completed round.
+
 ```
-LOOP: CONTINUE (N findings — P1 x, P2 y)   Tokens: … | Est. cost: …
-   The cheap round found work. Fix, commit, and run /codex review again — the lane has NOT
-   converged and the gate has not run.
+Under `--phase auto` (a plain review in the rollout repo) — FOUR outcomes:
 
-LOOP: CLEAN — gate owed                    Tokens: … | Est. cost: …
-   No P1 and no P2 at the cheap tier. This is NOT convergence: run /codex review again and the
-   adapter promotes to the gate. Only the gate's verdict ends a lane.
+GATE: PASS | GATE: FAIL (N critical)       the gate ran, in this invocation, and spoke.
+                                           Only this ends a lane.
 
-ROUND NOT RUN — <the adapter's reason>
-   Neither a PASS nor a FAIL. Nothing was reviewed; report it as such and fix the cause.
+LOOP: CONTINUE (N findings — P1 x, P2 y)   the cheap round found work, so no promotion happened.
+                                           Fix, commit, run /codex review again.
+
+ROUND STATE UNKNOWN — still running        exit 125. Possibly a clean loop with the gate still
+                                           executing. NOT a verdict; re-run the poll block.
+
+LANE BLOCKED — <the adapter's reason>       exit 6, and TERMINAL. The gate backend cannot run, so
+                                           this lane cannot converge no matter how many rounds it
+                                           buys. Do not retry it — fix gate readiness.
+
+Under an explicit `--loop` — the loop is never promoted, so it adds:
+
+LOOP: CLEAN — gate owed                    no P1 and no P2 at the cheap tier. NOT convergence:
+                                           run a plain /codex review to reach the gate.
 ```
 
-**And the persistence line below takes the same three states.** `gate` is `"pass"`/`"fail"` ONLY
-for a round that reached the gate; a loop round records `"loop-continue"` or `"loop-clean"`, and a
-round that did not run records `"not-run"`. Writing `"pass"` for any of the others puts a
-convergence claim into the review log that no gate ever made.
+**The persistence line below takes the same states.** `gate` is `"pass"`/`"fail"` ONLY for a round
+that reached the gate. A loop round records `"loop-continue"`, or `"loop-clean"` on the explicit
+path; an unfinished round records `"unknown"`; a lane the gate cannot serve records **`"blocked"`**,
+which is deliberately NOT `"not-run"` — blocked is terminal, and flattening it into a transient miss
+invites a later session to keep retrying a lane that can never converge. A round refused for any
+other reason records `"not-run"`. Writing `"pass"` for any of these puts a convergence claim into
+the review log that no gate ever made.
 
 5a. **Synthesis recommendation (REQUIRED).** After presenting Codex's verbatim
 output and the GATE verdict, emit ONE recommendation line summarizing what the

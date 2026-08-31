@@ -208,10 +208,19 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // Before this change every plain review ended at the gate, so GATE: PASS|FAIL were the only
   // shapes. Under auto a review can stop after the loop or not run at all, and flattening either
   // into GATE: PASS reports a lane as converged when the gate has not spoken.
-  test.each(FILES)('%s: the presentation carries loop and not-run shapes', (_l, file) => {
+  // RE-DERIVED. This asserted LOOP: CLEAN as an auto outcome. It is not one: auto promotes
+  // IN-PROCESS, so a clean loop launches the gate immediately and "the loop came back clean" is
+  // never a finished state there — reporting it as one presents an invocation whose gate is still
+  // running as a completed round. It remains a real outcome on the EXPLICIT --loop path, which is
+  // never promoted, so the guard now asserts the split rather than the shape.
+  test.each(FILES)('%s: the outcome set is split by path, and blocked stays terminal', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
     expect(t).toContain('LOOP: CONTINUE');
-    expect(t).toContain('LOOP: CLEAN — gate owed');
+    expect(t).toMatch(/Under `--phase auto`[\s\S]{0,900}?ROUND STATE UNKNOWN/);
+    expect(t).toMatch(/Under an explicit `--loop`[\s\S]{0,300}?LOOP: CLEAN — gate owed/);
+    // blocked is terminal and must not be flattened into not-run, or a later session retries a
+    // lane that can never converge.
+    expect(t).toMatch(/`"blocked"`[\s\S]{0,200}?NOT `"not-run"`/);
     expect(t).toMatch(/gate` is `"pass"`\/`"fail"` ONLY/);
   });
 
