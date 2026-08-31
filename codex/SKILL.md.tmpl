@@ -345,8 +345,25 @@ phase-derived reporting, and the change would be unreachable in the one repo it 
 
 ```bash
 _REVIEW_ROUTE=gate
-[ "${_REVIEW_REPO:-}" = "${_REVIEW_AUTO_REPO:-}" ] && [ -n "${_REVIEW_REPO:-}" ] && _REVIEW_ROUTE=auto
-echo "REVIEW_ROUTE: $_REVIEW_ROUTE"
+# TWO conditions, not one. The repo must opt in AND the resolved phase must actually be `loop`.
+#
+# ⚠ WITHOUT THE SECOND, AN `auto` THAT RESOLVES STRAIGHT TO `final_gate` IS RUN BY THE LOOP
+# LAUNCHER — which sends the loop's prompt and leaves --codex-mode at its `exec` default, so the
+# round is DIFF-SCOPED, while the reporting below correctly labels it GATE_*. That presents a
+# weaker review as the repo-scoped `codex review` gate having run clean, which is the exact
+# false-clean this change exists to prevent. It is not an edge case either: `outside_voice_loop`
+# defaults to codex on an unconfigured install, and size-cap and runaway-cap fallbacks land there
+# too.
+#
+# The fix is subtraction rather than a second launcher. If the phase is already `final_gate` there
+# is nothing to promote — the lane has converged and the gate is owed — so the existing inline
+# gate path is exactly the right thing to run, and it is already repo-scoped, already
+# --codex-mode review, already 330s. `auto` is only interesting when a loop round is going to run.
+if [ "${_REVIEW_REPO:-}" = "${_REVIEW_AUTO_REPO:-}" ] && [ -n "${_REVIEW_REPO:-}" ] \
+   && [ "${_OV_RESOLVED_PHASE:-}" = "loop" ]; then
+  _REVIEW_ROUTE=auto
+fi
+echo "REVIEW_ROUTE: $_REVIEW_ROUTE   (repo=${_REVIEW_REPO:-unknown} resolved=${_OV_RESOLVED_PHASE:-unknown})"
 ```
 
 **If `REVIEW_ROUTE: auto`, skip to the loop path below and run it with `_OV_PHASE=auto`.** It
@@ -834,7 +851,18 @@ fi
 # this findings file. The ADAPTER announces the promotion on stderr, and that announcement is the
 # only thing that observes it — so it is the producer here, exactly as resolve-phase is the
 # producer for the pre-call followers.
+# THE ADAPTER'S OWN ANNOUNCEMENT, NOT THE EARLIER PROBE. Step 0.4 resolved a phase to choose the
+# effort and the budget, and that read happened BEFORE the round launched — so if another round on
+# this lane advanced the ledger in between, the invocation can legitimately start on a different
+# phase than the probe predicted. Labelling from the probe would then misstate the bar and suppress
+# GATE_BACKEND for the round that actually ran. The adapter prints `phase resolved to '<phase>'` on
+# every auto call, which is the only reading taken at the moment the round began.
 _OV_RAN_PHASE="$_OV_RESOLVED_PHASE"
+_OV_ANNOUNCED=$(sed -n "s/.*phase resolved to '\([a-z_]*\)'.*/\1/p" "$TMPERR" 2>/dev/null | tail -1)
+if [ -n "$_OV_ANNOUNCED" ]; then
+  [ "$_OV_ANNOUNCED" != "$_OV_RESOLVED_PHASE" ] && echo "NOTE: the ledger moved between the pre-call probe ($_OV_RESOLVED_PHASE) and the round the adapter actually started ($_OV_ANNOUNCED). The announcement wins; effort and budget were chosen from the probe and are stated above."
+  _OV_RAN_PHASE="$_OV_ANNOUNCED"
+fi
 if grep -q 'running the final_gate round now' "$TMPERR" 2>/dev/null; then
   _OV_RAN_PHASE=final_gate
   echo "AUTO PROMOTED: the loop reported no P1 and no P2, so the gate ran in the same invocation. The findings below are the GATE's."

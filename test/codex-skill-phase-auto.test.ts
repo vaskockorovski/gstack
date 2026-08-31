@@ -180,6 +180,27 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     expect(m).not.toBeNull();
   });
 
+  // ── auto IS ONLY TAKEN WHEN A LOOP ROUND WILL ACTUALLY RUN ───────────────────────────────────
+  // An auto that resolves straight to final_gate, run by the loop launcher, sends the loop's
+  // prompt with --codex-mode at its `exec` default: a DIFF-scoped round reported as the
+  // repo-scoped gate. Not an edge case — outside_voice_loop defaults to codex on an unconfigured
+  // install, and the size-cap and runaway-cap fallbacks land there too.
+  test.each(FILES)('%s: the auto route also requires the resolved phase to be loop', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/_REVIEW_REPO:-\}" = "\$\{_REVIEW_AUTO_REPO:-\}"[\s\S]{0,200}?_OV_RESOLVED_PHASE:-\}" = "loop"/);
+  });
+
+  // ── THE ANNOUNCEMENT BEATS THE PROBE ─────────────────────────────────────────────────────────
+  // The pre-call resolve-phase happens before the round launches, so another round on the lane can
+  // advance the ledger in between. Labelling from the probe would misstate the bar and suppress
+  // GATE_BACKEND for the round that actually ran.
+  test.each(FILES)('%s: the phase that ran is read from the adapter announcement', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toContain('_OV_ANNOUNCED');
+    expect(t).toContain("phase resolved to");
+    expect(t).toMatch(/_OV_ANNOUNCED" \][\s\S]{0,300}?_OV_RAN_PHASE="\$_OV_ANNOUNCED"/);
+  });
+
   // ── EXIT 6 stays enumerated on this path ─────────────────────────────────────────────────────
   // The adapter grew `blocked` with the VAS-2373 redesign; a lane that cannot converge must report
   // as blocked, never as an unexpected failure and never as a clean round.
