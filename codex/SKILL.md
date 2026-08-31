@@ -2101,41 +2101,39 @@ every plain review ended at the gate. Under `auto` a plain review can also stop 
 not run at all — and flattening either into `GATE: PASS` reports a lane as converged when the gate
 has not spoken. Use the shape that matches the `BAR:` line the round printed:
 
-⚠ **THE OUTCOME SET DIFFERS BETWEEN THE TWO PATHS, because `auto` PROMOTES IN-PROCESS.** A clean
-loop under `auto` does not end the invocation and wait to be asked again — the adapter launches the
-gate immediately, in the same call. So "the loop came back clean" is **not a finished state** on
-that path, and reporting it as one presents an invocation whose gate is still running as a
-completed round.
+⚠ **ONLY A ROUND WHOSE ANNOUNCED PHASE WAS `final_gate` CAN END A LANE. Report what the adapter
+SAID IT DID — never what you inferred from an exit code.**
+
+Two earlier drafts of this step enumerated the adapter's outcomes by exit code, and a review round
+found the enumeration wrong both times: it claimed a finished state `--phase auto` does not have
+(auto promotes IN-PROCESS, so a clean loop launches the gate in the same invocation and never
+returns "loop clean"), and it flattened a terminal state into a transient one. The enumeration was
+the defect. It is a claim about someone else's exit-code table, restated in a file that cannot
+notice when that table changes — so it is gone, and one invariant stands in its place:
 
 ```
-Under `--phase auto` (a plain review in the rollout repo) — FOUR outcomes:
+_OV_RAN_PHASE = final_gate   →  the gate ran in THIS invocation and spoke.
+                                GATE: PASS | GATE: FAIL (N critical). This is the ONLY
+                                outcome that ends a lane.
 
-GATE: PASS | GATE: FAIL (N critical)       the gate ran, in this invocation, and spoke.
-                                           Only this ends a lane.
-
-LOOP: CONTINUE (N findings — P1 x, P2 y)   the cheap round found work, so no promotion happened.
-                                           Fix, commit, run /codex review again.
-
-ROUND STATE UNKNOWN — still running        exit 125. Possibly a clean loop with the gate still
-                                           executing. NOT a verdict; re-run the poll block.
-
-LANE BLOCKED — <the adapter's reason>       exit 6, and TERMINAL. The gate backend cannot run, so
-                                           this lane cannot converge no matter how many rounds it
-                                           buys. Do not retry it — fix gate readiness.
-
-Under an explicit `--loop` — the loop is never promoted, so it adds:
-
-LOOP: CLEAN — gate owed                    no P1 and no P2 at the cheap tier. NOT convergence:
-                                           run a plain /codex review to reach the gate.
+_OV_RAN_PHASE = anything else,  →  NO GATE VERDICT EXISTS, whatever the findings say.
+or empty                           Report the phase that actually ran, the adapter's exit
+                                   code, and its own message VERBATIM. Do not translate
+                                   that exit code into a state name of your own — you do
+                                   not own the vocabulary and it drifts under you.
+                                   The lane has NOT converged.
 ```
 
-**The persistence line below takes the same states.** `gate` is `"pass"`/`"fail"` ONLY for a round
-that reached the gate. A loop round records `"loop-continue"`, or `"loop-clean"` on the explicit
-path; an unfinished round records `"unknown"`; a lane the gate cannot serve records **`"blocked"`**,
-which is deliberately NOT `"not-run"` — blocked is terminal, and flattening it into a transient miss
-invites a later session to keep retrying a lane that can never converge. A round refused for any
-other reason records `"not-run"`. Writing `"pass"` for any of these puts a convergence claim into
-the review log that no gate ever made.
+**Read `_OV_RAN_PHASE` from the adapter's stderr announcement, never from what you asked for** —
+the request is `auto`, the announcement is what auto RESOLVED to, and a promotion changes it
+mid-invocation. Asking-is-not-getting is the whole reason this variable exists.
+
+**The persistence line below records the same three observed facts and invents nothing.** `gate` is
+`"pass"`/`"fail"` **only** when `_OV_RAN_PHASE` was `final_gate`; otherwise it is `"none"`, and the
+announced phase and the adapter's exit code are recorded beside it as their own fields. A session
+reading the log later can then see exactly what ran and what it returned, without this file having
+promised in advance what any particular code means. Writing `"pass"` for a round no gate finished
+puts a convergence claim into the review log that no gate ever made.
 
 5a. **Synthesis recommendation (REQUIRED).** After presenting Codex's verbatim
 output and the GATE verdict, emit ONE recommendation line summarizing what the

@@ -208,22 +208,36 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // Before this change every plain review ended at the gate, so GATE: PASS|FAIL were the only
   // shapes. Under auto a review can stop after the loop or not run at all, and flattening either
   // into GATE: PASS reports a lane as converged when the gate has not spoken.
-  // RE-DERIVED. This asserted LOOP: CLEAN as an auto outcome. It is not one: auto promotes
-  // IN-PROCESS, so a clean loop launches the gate immediately and "the loop came back clean" is
-  // never a finished state there — reporting it as one presents an invocation whose gate is still
-  // running as a completed round. It remains a real outcome on the EXPLICIT --loop path, which is
-  // never promoted, so the guard now asserts the split rather than the shape.
-  test.each(FILES)('%s: the outcome set is split by path, and blocked stays terminal', (_l, file) => {
+  // RE-DERIVED TWICE, and the second time is the interesting one. It first asserted a gate-only
+  // presentation, then an enumerated outcome table, and a review round found the ENUMERATION wrong
+  // on both attempts — the table was a claim about the adapter's exit-code vocabulary restated in a
+  // file that cannot notice when that vocabulary changes. Adding states was the failure; the guard
+  // now asserts the one invariant that survives the adapter changing underneath it, and asserts
+  // that the enumeration has NOT come back.
+  test.each(FILES)('%s: only an announced final_gate phase may end a lane', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
-    expect(t).toContain('LOOP: CONTINUE');
-    expect(t).toMatch(/Under `--phase auto`[\s\S]{0,900}?ROUND STATE UNKNOWN/);
-    expect(t).toMatch(/Under an explicit `--loop`[\s\S]{0,300}?LOOP: CLEAN — gate owed/);
-    // blocked is terminal and must not be flattened into not-run, or a later session retries a
-    // lane that can never converge.
-    expect(t).toMatch(/`"blocked"`[\s\S]{0,200}?NOT `"not-run"`/);
-    expect(t).toMatch(/gate` is `"pass"`\/`"fail"` ONLY/);
+    // the invariant, wired to the producer rather than to a helper's existence
+    expect(t).toMatch(/_OV_RAN_PHASE = final_gate[\s\S]{0,220}?ONLY[\s\S]{0,40}?outcome that ends a lane/);
+    expect(t).toMatch(/anything else[\s\S]{0,200}?NO GATE VERDICT EXISTS/);
+    // the announcement is the source, not the request — a promotion changes it mid-invocation
+    expect(t).toMatch(/Read `_OV_RAN_PHASE` from the adapter's stderr announcement, never from what you asked for/);
+    // persistence keys off the same fact and invents no vocabulary. \s+ not ' ' — the sentence
+    // wraps, and a literal space here would make this guard a test of the FORMATTER.
+    expect(t).toMatch(/`gate` is\s+`"pass"`\/`"fail"` \*\*only\*\* when `_OV_RAN_PHASE` was `final_gate`/);
+    // The enumeration must stay gone — but SCOPED TO THE PROSE BLOCK. A bare not.toContain here
+    // forbade the skill's own working shell code: `LANE BLOCKED` is a real echo on the exit-6 path
+    // and predates this branch (3 sites on the base). That the code was already right is precisely
+    // why the prose table was redundant, and forbidding the code to protect the prose would have
+    // been the enumeration defect a third time, in the guard.
+    const prose = t.slice(
+      t.indexOf('ONLY A ROUND WHOSE ANNOUNCED PHASE WAS'),
+      t.indexOf('5a. **Synthesis recommendation'),
+    );
+    expect(prose.length).toBeGreaterThan(400);   // the slice found both anchors
+    expect(prose).not.toMatch(/^\s*LANE BLOCKED\s{2,}/m);
+    expect(prose).not.toContain('ROUND STATE UNKNOWN');
+    expect(prose).not.toMatch(/exit 6, and TERMINAL/);
   });
-
   // ── PARTIAL OUTPUT IS WITHHELD WHILE THE ROUND RUNS ──────────────────────────────────────────
   // Under auto a 125 can mean the loop half finished and the gate is still running, so the file on
   // disk holds a complete clean-looking review from an unfinished invocation.
