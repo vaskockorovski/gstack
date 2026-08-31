@@ -75,12 +75,16 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // An auto call may run the loop AND then the gate without returning. A budget sized for one of
   // them truncates the other, and a round killed by its own timeout exits 124 having produced
   // nothing — byte-identical to a clean round.
-  test.each(FILES)('%s: the timeout budget covers loop-then-gate under auto', (_l, file) => {
+  // RE-DERIVED, not deleted. This asserted _OV_TIMEOUT=1230 "for the fused case" — an assertion
+  // that encoded a belief about the adapter which turned out to be false: `--timeout` is applied
+  // PER ROUND (with_timeout runs inside each backend call, and _round runs again on promotion), so
+  // there is no fused total to budget for. Deleting the test would have removed the only guard on
+  // this follower; what it should assert is that the budget is the loop's own, and that the
+  // wall-clock cost of a promotion is handled by the poller being re-runnable.
+  test.each(FILES)('%s: the timeout is the loop\'s own per-round budget', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
-    expect(t).toMatch(/_OV_PHASE" = "auto" \]; then _OV_TIMEOUT=1230/);
-    // 1230 = the loop's 900 plus the gate's 330. Asserted as arithmetic rather than as a literal
-    // so a future change to either half has to come here and say so.
-    expect(900 + 330).toBe(1230);
+    expect(t).toContain('_OV_TIMEOUT=900');
+    expect(t).toMatch(/per round[\s\S]{0,200}?re-run the poll block/);
   });
 
   // ── FOLLOWER 4 and 5: the LABEL and the SEVERITY BAR follow the phase that ACTUALLY RAN ──────
@@ -199,6 +203,25 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     expect(t).toContain('_OV_ANNOUNCED');
     expect(t).toContain("phase resolved to");
     expect(t).toMatch(/_OV_ANNOUNCED" \][\s\S]{0,300}?_OV_RAN_PHASE="\$_OV_ANNOUNCED"/);
+  });
+
+  // ── STEP 4 HONOURS THE BAR ON THE NO-BLOCK PATH ──────────────────────────────────────────────
+  // The marker fallback was written when a no-block round was always a gate round. Under auto it
+  // can be a codex-backed LOOP round, whose bar is P1 or P2 — so the grader must read the printed
+  // BAR line rather than assuming the gate's P1-only rule and passing a lane with P2s outstanding.
+  test.each(FILES)('%s: the marker fallback defers to the printed BAR line', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/fall back to the markers[\s\S]{0,900}?Read the BAR line/);
+  });
+
+  // ── THE TIMEOUT IS PER ROUND, AND SAYS SO ────────────────────────────────────────────────────
+  // Verified in the adapter: with_timeout is applied inside each backend call and _round runs a
+  // second time on promotion. An earlier revision called 1230 a fused total, which would have told
+  // an operator a round was over budget while it was legitimately still running.
+  test.each(FILES)('%s: the timeout is described per round, not as a fused total', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toContain('per round');
+    expect(t).not.toContain('_OV_TIMEOUT=1230');
   });
 
   // ── EXIT 6 stays enumerated on this path ─────────────────────────────────────────────────────

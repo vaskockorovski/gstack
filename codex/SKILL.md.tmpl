@@ -628,14 +628,23 @@ elif [ "$_OV_PHASE" = "auto" ]; then _OV_EFFORT=high
 else _OV_EFFORT=medium; fi
 echo "LOOP_EFFORT: $_OV_EFFORT"   # printed so an unapplied --xhigh is visible, not inferred
 
-# FOLLOWER: the TIMEOUT BUDGET, likewise worst-case. An explicit --loop runs one round (900s).
-# An `auto` call may run the loop AND then the gate in the same invocation, so its budget is the
-# FUSED worst case; 900 + 330 = 1230. This is why `auto` reuses this backgrounded path rather
-# than the gate's inline one: 1230s cannot fit under the host's 600000ms call cap inline, and the
-# poller below already solves exactly that. Reusing it also avoids a second copy of the launch,
-# liveness and re-entry machinery — the kind of duplication this file has spent rounds deleting.
-if [ "$_OV_PHASE" = "auto" ]; then _OV_TIMEOUT=1230; else _OV_TIMEOUT=900; fi
-echo "LOOP_TIMEOUT: ${_OV_TIMEOUT}s"
+# FOLLOWER: the TIMEOUT BUDGET.
+#
+# ⚠ `--timeout` IS PER ROUND, NOT PER INVOCATION — verified in the adapter, where `with_timeout`
+# is applied inside each backend call and `_round` is invoked a SECOND time on promotion. An
+# earlier revision of this line set 1230 "for the fused case" and described it as a total; that
+# was simply wrong about the adapter, and it would have told an operator a round was over budget
+# when it was legitimately still running.
+#
+# So the value stays the loop's own 900. A promoted gate round inherits it, which is generous
+# against the gate's usual 330 and harmless — the gate is the cheaper half in wall-clock.
+# What the fused case actually costs is WALL CLOCK across the invocation, up to roughly twice
+# this, and that is handled by the poll block below being RE-RUNNABLE rather than by a bigger
+# number: re-running it polls the same child instead of starting a second paid review. That is
+# also why `auto` reuses this backgrounded path rather than the gate's inline one, and why it
+# does not need a second copy of the launch, liveness and re-entry machinery.
+_OV_TIMEOUT=900
+echo "LOOP_TIMEOUT: ${_OV_TIMEOUT}s per round (an auto invocation may run two: expect to re-run the poll block)"
 # Recover a DEAD round before deciding whether to relaunch. The launch marker is deliberately
 # kept on exit 125 (a round still running must be polled, not duplicated), but 125's own message
 # tells the operator to find and kill an orphaned uncapped call — and after they do, the marker
@@ -1199,7 +1208,16 @@ grep "tokens used" "$TMPERR" 2>/dev/null || echo "tokens: unknown"
    ran". If the adapter exited 4, the gate is NOT RUN — report it as such and grade nothing.
 
    Only when NO block was printed AND the exit was 0 — the codex backend ran, and owns its
-   own output format — fall back to the markers:
+   own output format — fall back to the markers.
+
+   ⚠ **AND WHEN A `BAR:` LINE WAS PRINTED, IT DECIDES WHICH BAR THE MARKERS ARE READ ON.** The
+   fallback below is stated in GATE terms — `[P1]` only — because until VAS-2402 a no-block round
+   was always a gate round. Under `--phase auto` it may be a **loop** round on the codex backend,
+   whose stop condition is `[P1]` **or** `[P2]`, so grading it on the gate's bar reports a round
+   carrying P2s as a clean PASS and ends a lane that has not converged. The round prints
+   `BAR: loop` or `BAR: gate` beside `NO_FINDINGS_BLOCK` precisely so this is not inferred from
+   the invocation. **Read the BAR line; only fall back to assuming the gate's bar when none was
+   printed.**
    If the output contains `[P1]` — the gate is **FAIL**.
    If no `[P1]` markers are found (only `[P2]` or no findings) — the gate is **PASS**.
 
