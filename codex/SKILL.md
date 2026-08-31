@@ -973,9 +973,20 @@ per-mode default below. Otherwise, use the per-mode defaults:
 # in the other direction too: the default gate path was blocked by a hosted LOOP setting.
 #
 # SET THIS LINE from the mode Step 0.3 ALREADY RESOLVED — do not re-derive it from what the
-# user typed: `loop` for review --loop (focused or not); `auto` for a PLAIN review in the rollout
-# repository; `final_gate` for a plain review anywhere else; `none` for challenge/consult/plan,
-# which call codex directly and must keep their gating.
+# user typed:
+#   loop        any `review --loop`, focused or not.
+#   auto        ANY OTHER REVIEW in a claude-fleet-config worktree.
+#   final_gate  any other review anywhere else.
+#   none        challenge/consult/plan, which call codex directly and must keep their gating.
+#
+# ⚠ "ANY OTHER REVIEW" IS LITERAL, AND THE EARLIER WORDING ("a PLAIN review") WAS NOT.
+# Three entry points reach review mode and all three take the same value: `/codex review`,
+# `/codex review <instructions>`, and bare `/codex` once the user picks Review at Step 0.3.
+# WHETHER INSTRUCTIONS WERE GIVEN IS NOT AN AXIS HERE. The route below keys on the REPO and
+# nothing else (one condition, `_REVIEW_REPO = _REVIEW_AUTO_REPO`), so reading "plain" as
+# "unfocused" hands a focused review `final_gate` while the route resolves `auto` — the two
+# then disagree, which is the precise failure the ⚠ below describes. The rule is: no `--loop`
+# flag, and the repo decides.
 # ⚠ STEP 0.3's ROUTING TABLE IS THE AUTHORITY, not this line. It said `final_gate` for every
 # review without the flag, which is the pre-VAS-2402 rule — and a caller obeying it here would
 # skip the inline gate (because the route resolves to auto) and then hand the loop launcher
@@ -1021,7 +1032,7 @@ _OV_PHASE="<<SET-ME: loop | final_gate | auto | none>>"   # ← SUBSTITUTE THIS 
 # the line the reader actually has to edit.
 case "$_OV_PHASE" in
   loop|final_gate|auto|none) ;;
-  *) echo "STOP: _OV_PHASE was not substituted (still '$_OV_PHASE'). Step 0.3 has already resolved the mode; carry it here — 'loop' for review --loop, 'auto' for a plain review in a claude-fleet-config worktree, 'final_gate' for a plain review anywhere else, 'none' for challenge/consult/plan. Re-run this block after substituting." >&2
+  *) echo "STOP: _OV_PHASE was not substituted (still '$_OV_PHASE'). Step 0.3 has already resolved the mode; carry it here — 'loop' for any review --loop; 'auto' for ANY OTHER review in a claude-fleet-config worktree (including a focused one, and including bare /codex once Review is picked — instructions are not an axis); 'final_gate' for any other review anywhere else; 'none' for challenge/consult/plan. Re-run this block after substituting." >&2
      return 2 2>/dev/null || exit 2 ;;
 esac
 
@@ -2175,10 +2186,11 @@ CROSS-MODEL ANALYSIS:
 
 7. Persist the review result:
 ```bash
-~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"codex-review","timestamp":"TIMESTAMP","status":"STATUS","gate":"GATE","findings":N,"findings_fixed":N,"commit":"'"$(git rev-parse --short HEAD)"'"}'
+~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"codex-review","timestamp":"TIMESTAMP","status":"STATUS","gate":"GATE","ran_phase":"RAN_PHASE","exit":EXIT,"findings":N,"findings_fixed":N,"commit":"'"$(git rev-parse --short HEAD)"'"}'
 ```
 
-Substitute: TIMESTAMP (ISO 8601), findings (from GATE_FINDINGS_JSON's p1+p2 when a block was
+Substitute: TIMESTAMP (ISO 8601), RAN_PHASE (`$_OV_RAN_PHASE`, or empty if the adapter announced
+nothing), EXIT (the adapter's exit code, unquoted), findings (from GATE_FINDINGS_JSON's p1+p2 when a block was
 printed, else the count of [P1] + [P2] markers), findings_fixed (count of findings that were
 addressed/fixed before shipping).
 
@@ -2196,9 +2208,10 @@ not thereby a passing round:
 this log can be trusted.** Without it a caller has no truthful value to write, and the reflex is to
 reach for `clean`/`pass` because the round produced no failures — recording a lane the gate never
 spoke on as converged, which is the exact claim a later session reads back. Add
-`"ran_phase":"<_OV_RAN_PHASE, or empty>"` and `"exit":<the adapter's exit code>` alongside them, so
-what actually ran is recoverable from the log rather than inferred from a verdict that was never
-issued. (`gstack-review-log` validates only that the payload parses as JSON — verified by reading
+`ran_phase` and `exit` — already in the payload above — carry what actually ran, so it is
+recoverable from the log rather than inferred from a verdict that was never issued. Fill them in on
+EVERY row, not only no-verdict ones: a field present only when something went wrong is a field
+nobody can tell apart from a field nobody filled in. (`gstack-review-log` validates only that the payload parses as JSON — verified by reading
 it — so these extra keys are safe to add.)
 
 8. Clean up temp files:

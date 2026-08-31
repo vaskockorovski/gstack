@@ -219,6 +219,41 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // recommendation line and the review-log substitution contract — were left gate-only, so a
   // loop-only or blocked round had no truthful value to persist and the reflex value is "pass".
   // These guard the dependents, not the invariant.
+  // Round 11. Two sites state the _OV_PHASE rule (the guidance comment and the STOP message the
+  // self-validating placeholder prints). "a PLAIN review" read as "unfocused", but the route keys
+  // on the REPO alone — so a focused review in the rollout repo would be handed final_gate while
+  // the route resolved auto. Both sites must carry the same rule, or the second is a rival
+  // authority; the guard asserts BOTH, because fixing one is how they drifted in the first place.
+  test.each(FILES)('%s: instructions are not an axis of the phase rule, at either site', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    // Assert the RULE LINE, not only the paragraph explaining it. A mutation probe reverted the
+    // line to "a PLAIN review" while leaving the explanation intact and this guard stayed green —
+    // it was testing the commentary, which is the same defect as asserting a sort exists rather
+    // than asserting the resulting order.
+    expect(t).toMatch(/^#\s+auto\s+ANY OTHER REVIEW in a claude-fleet-config worktree\.$/m);
+    expect(t).toMatch(/^#\s+final_gate\s+any other review anywhere else\.$/m);
+    expect(t).toMatch(/"ANY OTHER REVIEW" IS LITERAL/);
+    expect(t).toMatch(/WHETHER INSTRUCTIONS WERE GIVEN IS NOT AN AXIS HERE/);
+    // the STOP message — the OTHER authority — carries the same rule, not the old wording
+    expect(t).toMatch(/STOP: _OV_PHASE was not substituted[\s\S]{0,400}?instructions are not an axis/);
+    // and the superseded wording is gone from both
+    expect(t).not.toMatch(/`auto` for a PLAIN review/);
+    expect(t).not.toMatch(/'auto' for a plain review in a claude-fleet-config worktree/);
+  });
+
+  // The prose said no-verdict rounds must record ran_phase and exit; the RUNNABLE payload did not
+  // carry either field. The command is what gets copied, so the prose was decoration. Assert the
+  // payload, not the paragraph.
+  test.each(FILES)('%s: the runnable log payload carries the announced phase', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    const payload = t.slice(t.indexOf('gstack-review-log'), t.indexOf('gstack-review-log') + 400);
+    expect(payload).toContain('"ran_phase":"RAN_PHASE"');
+    expect(payload).toContain('"exit":EXIT');
+    // both placeholders are named in the substitution note, or nobody knows what to write
+    expect(t).toMatch(/RAN_PHASE \(`\$_OV_RAN_PHASE`/);
+    expect(t).toMatch(/EXIT \(the adapter's exit code, unquoted\)/);
+  });
+
   test.each(FILES)('%s: the review log can express a round with no verdict', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
     // a no-verdict row must be WRITABLE — a contract that only admits pass/fail forces a lie
