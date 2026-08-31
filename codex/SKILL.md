@@ -1454,6 +1454,22 @@ echo "LOOP_EFFORT: $_OV_EFFORT"   # printed so an unapplied --xhigh is visible, 
 # does not need a second copy of the launch, liveness and re-entry machinery.
 _OV_TIMEOUT=900
 echo "LOOP_TIMEOUT: ${_OV_TIMEOUT}s per round (an auto invocation may run two: expect to re-run the poll block)"
+
+# FOLLOWER: THE CODEX MODE, and this one is only visible by reading the adapter. `_round` passes
+# the caller's --codex-mode straight to exec_codex, and the auto promotion calls `_round` a SECOND
+# time — so a promoted gate inherits whatever the loop launcher passed. At the loop's `exec`
+# default that runs the gate through `codex exec`, which is DIFF-scoped, while the reporting below
+# correctly labels it GATE_*: a weaker round presented as the repo-scoped gate for the lane.
+#
+# The same inheritance also closes the RACE. Step 0.4 resolves the phase before the child launches,
+# and another round on the lane can advance the ledger in between, so the adapter may re-resolve to
+# `final_gate` at dispatch. With `review` passed, that raced gate still runs in the right shape.
+#
+# `review` is harmless on the loop half: exec_codex is the only consumer, so a hosted loop ignores
+# it entirely, and a codex-backed loop simply gets Codex's own review tuning — which is the better
+# of the two anyway.
+if [ "$_OV_PHASE" = "auto" ]; then _OV_MODE=review; else _OV_MODE=exec; fi
+echo "LOOP_CODEX_MODE: $_OV_MODE"
 # Recover a DEAD round before deciding whether to relaunch. The launch marker is deliberately
 # kept on exit 125 (a round still running must be polled, not duplicated), but 125's own message
 # tells the operator to find and kill an orphaned uncapped call — and after they do, the marker
@@ -1565,8 +1581,10 @@ GSTACK_OV_DONE="$_OV_DONE" \
 GSTACK_OV_EFFORT="$_OV_EFFORT" \
 GSTACK_OV_PHASE="$_OV_PHASE" \
 GSTACK_OV_TIMEOUT="$_OV_TIMEOUT" \
+GSTACK_OV_MODE="$_OV_MODE" \
 nohup bash -c '~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
-  --phase "$GSTACK_OV_PHASE" --prompt-file "$GSTACK_OV_PROMPT" --repo-root "$GSTACK_OV_REPO" \
+  --phase "$GSTACK_OV_PHASE" --codex-mode "$GSTACK_OV_MODE" \
+  --prompt-file "$GSTACK_OV_PROMPT" --repo-root "$GSTACK_OV_REPO" \
   --base "origin/<base>" --effort "$GSTACK_OV_EFFORT" --timeout "$GSTACK_OV_TIMEOUT" \
   --findings-out "$GSTACK_OV_FINDINGS" < /dev/null 2>"$GSTACK_OV_ERR"
 echo $? > "$GSTACK_OV_DONE"' > "$_OV_OUT" 2>&1 &
@@ -1587,10 +1605,10 @@ fi
 # BLOCK AGAIN — it re-polls the existing child rather than starting a new one, because the
 # launch above is skipped when $_OV_DONE already exists. Two or three repeats cover a
 # fifteen-minute round.
-# 55 x 10s = 550s, sized for the host's 600000ms call cap — NOT for the round, which may be
-# allowed 1230s under `auto`. The block is re-runnable by design: if the marker has not appeared,
-# run it again and it polls the SAME child rather than starting a second paid review. An `auto`
-# round that runs loop-then-gate will normally need two or three passes.
+# 55 x 10s = 550s, sized for the host's 600000ms call cap — NOT for the round, which is allowed
+# 900s PER ROUND. The block is re-runnable by design: if the marker has not appeared, run it again
+# and it polls the SAME child rather than starting a second paid review. An `auto` invocation that
+# runs loop-then-gate spends up to 900s on each, so expect two or three passes.
 for _i in $(seq 1 55); do [ -s "$_OV_DONE" ] && break; sleep 10; done
 if [ -s "$_OV_DONE" ]; then
   _OV_EXIT=$(cat "$_OV_DONE")
@@ -2027,6 +2045,14 @@ grep "tokens used" "$TMPERR" 2>/dev/null || echo "tokens: unknown"
    `BAR: loop` or `BAR: gate` beside `NO_FINDINGS_BLOCK` precisely so this is not inferred from
    the invocation. **Read the BAR line; only fall back to assuming the gate's bar when none was
    printed.**
+   **If `BAR: loop` was printed, use the LOOP rule instead of the two below:** any `[P1]` **or**
+   `[P2]` in the output means the loop **CONTINUES** — it is not a pass, and it is not convergence.
+   Only `[P3]` or nothing at all clears a loop round, and clearing it means *run the gate next*,
+   never *the lane is done*. This case exists because a codex-backed `auto` round emits no findings
+   block, so the markers are all there is, and reading them on the gate's rule would pass a lane
+   carrying P2s.
+
+   Otherwise — `BAR: gate`, or no BAR line at all, which is every pre-VAS-2402 round:
    If the output contains `[P1]` — the gate is **FAIL**.
    If no `[P1]` markers are found (only `[P2]` or no findings) — the gate is **PASS**.
 

@@ -111,6 +111,7 @@ describe('codex skill carries no harness-substitutable positionals (VAS-2403)', 
     // so a row in the wrong position fails as a structure defect rather than silently.
     ['GSTACK_OV_PHASE',    'GSTACK_OV_PHASE="$_OV_PHASE"',       '--phase "$GSTACK_OV_PHASE"'],
     ['GSTACK_OV_TIMEOUT',  'GSTACK_OV_TIMEOUT="$_OV_TIMEOUT"',   '--timeout "$GSTACK_OV_TIMEOUT"'],
+    ['GSTACK_OV_MODE',     'GSTACK_OV_MODE="$_OV_MODE"',         '--codex-mode "$GSTACK_OV_MODE"'],
   ];
 
   // Both files, because the template is what a human edits and the generated copy is what ships.

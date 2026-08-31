@@ -224,6 +224,25 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     expect(t).not.toContain('_OV_TIMEOUT=1230');
   });
 
+  // ── THE CODEX MODE IS A FOLLOWER TOO, AND ONLY THE ADAPTER SHOWS IT ──────────────────────────
+  // `_round` passes the caller's --codex-mode to exec_codex, and the auto promotion calls _round a
+  // SECOND time — so a promoted gate inherits whatever the loop launcher sent. At the loop's `exec`
+  // default that runs the gate DIFF-scoped while the reporting labels it GATE_*. The same
+  // inheritance also covers the race where the adapter re-resolves to final_gate at dispatch.
+  test.each(FILES)('%s: auto carries --codex-mode review for both halves', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/_OV_PHASE" = "auto" \]; then _OV_MODE=review/);
+    expect(t).toContain('--codex-mode "$GSTACK_OV_MODE"');
+  });
+
+  // ── STEP 4 CARRIES A CONCRETE LOOP RULE, not just a pointer to the BAR ────────────────────────
+  // Deferring to the BAR line is worthless if the only concrete grading rules that follow are the
+  // gate's. A session following the checklist literally would still pass a [P2]-only loop round.
+  test.each(FILES)('%s: the marker fallback states the loop rule explicitly', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/BAR: loop` was printed[\s\S]{0,300}?loop \*\*CONTINUES\*\*/);
+  });
+
   // ── EXIT 6 stays enumerated on this path ─────────────────────────────────────────────────────
   // The adapter grew `blocked` with the VAS-2373 redesign; a lane that cannot converge must report
   // as blocked, never as an unexpected failure and never as a clean round.
