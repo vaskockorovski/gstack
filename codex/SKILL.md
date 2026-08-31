@@ -973,9 +973,14 @@ per-mode default below. Otherwise, use the per-mode defaults:
 # in the other direction too: the default gate path was blocked by a hosted LOOP setting.
 #
 # SET THIS LINE from the mode Step 0.3 ALREADY RESOLVED — do not re-derive it from what the
-# user typed: `loop` for review --loop (focused or not), `final_gate` for a review without
-# the flag, `none`
-# for challenge/consult/plan, which call codex directly and must keep their gating.
+# user typed: `loop` for review --loop (focused or not); `auto` for a PLAIN review in the rollout
+# repository; `final_gate` for a plain review anywhere else; `none` for challenge/consult/plan,
+# which call codex directly and must keep their gating.
+# ⚠ STEP 0.3's ROUTING TABLE IS THE AUTHORITY, not this line. It said `final_gate` for every
+# review without the flag, which is the pre-VAS-2402 rule — and a caller obeying it here would
+# skip the inline gate (because the route resolves to auto) and then hand the loop launcher
+# `--phase final_gate`, so the auto lane never runs and the feature is silently bypassed. Two
+# places stating one rule is how that happens; this one defers.
 #
 # Step 0.3 runs BEFORE this step, and that ordering is load-bearing rather than cosmetic.
 # Mode detection used to sit after these checks, which left bare `/codex` — whose mode is
@@ -1673,7 +1678,17 @@ if [ "$_OV_EXIT" = "0" ] && [ -s "$_OV_FINDINGS" ]; then
 # The previous shape got away with this because the label was a constant; now that it can say
 # GATE_FINDINGS_JSON, a `<none>` payload under that label is a false clean gate.
 elif [ "$_OV_EXIT" = "0" ]; then
-  echo "NO_FINDINGS_BLOCK — backend was codex, which owns its own output format. Read severities from the [P1]/[P2] markers in the review output above; there is no JSON block to grade."
+  # THE BAR STILL HAS TO BE STATED HERE. Dropping the label was right — step 4 reads a printed
+  # label as authoritative — but the label was also the ONLY thing telling a reader which bar
+  # applied on the no-block path. Step 4's marker fallback describes GATE semantics, so a codex
+  # loop round carrying [P2]s would read as a clean pass instead of "the loop continues". So the
+  # phase and its bar are named explicitly, without printing a label that claims a block exists.
+  echo "NO_FINDINGS_BLOCK — backend was codex, which owns its own output format; there is no JSON block to grade. Read severities from the [P1]/[P2] markers in the review output above."
+  if [ "$_OV_RAN_PHASE" = "final_gate" ]; then
+    echo "BAR: gate — any [P1] is FAIL, none is PASS. This round can END the lane."
+  else
+    echo "BAR: loop — any [P1] OR [P2] means the loop CONTINUES. A clean loop round is NOT convergence; only the gate declares that."
+  fi
 elif [ "$_OV_EXIT" = "125" ]; then
   echo "NO_FINDINGS_BLOCK — the round is STILL RUNNING; the file belongs to that call. Not a verdict either way."
 else

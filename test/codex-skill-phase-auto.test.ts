@@ -170,6 +170,16 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     expect(t).toMatch(/_OV_RAN_PHASE" = "final_gate" \]; then[\s\S]{0,400}?GATE_BACKEND:/);
   });
 
+  // ── THE BAR SURVIVES THE LABEL'S REMOVAL ─────────────────────────────────────────────────────
+  // Dropping the label on the no-block path was right, and it took the bar signal with it: step
+  // 4's marker fallback describes GATE semantics, so a codex-backed LOOP round carrying [P2]s
+  // would read as a clean pass. The bar is now stated on both the block and no-block paths.
+  test.each(FILES)('%s: the severity bar is stated even when there is no findings block', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    const m = t.match(/NO_FINDINGS_BLOCK — backend was codex[\s\S]{0,700}?BAR: loop/);
+    expect(m).not.toBeNull();
+  });
+
   // ── EXIT 6 stays enumerated on this path ─────────────────────────────────────────────────────
   // The adapter grew `blocked` with the VAS-2373 redesign; a lane that cannot converge must report
   // as blocked, never as an unexpected failure and never as a clean round.
