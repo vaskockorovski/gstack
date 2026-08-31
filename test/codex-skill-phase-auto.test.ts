@@ -214,6 +214,32 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // file that cannot notice when that vocabulary changes. Adding states was the failure; the guard
   // now asserts the one invariant that survives the adapter changing underneath it, and asserts
   // that the enumeration has NOT come back.
+  // The step-5 invariant is worthless if the sites that CONSUME it still assume a verdict.
+  // Round 10 found exactly that: the presentation was corrected and its two dependents — the
+  // recommendation line and the review-log substitution contract — were left gate-only, so a
+  // loop-only or blocked round had no truthful value to persist and the reflex value is "pass".
+  // These guard the dependents, not the invariant.
+  test.each(FILES)('%s: the review log can express a round with no verdict', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    // a no-verdict row must be WRITABLE — a contract that only admits pass/fail forces a lie
+    expect(t).toMatch(/\|\s*\*\*no gate verdict exists\*\*[^|]*\|[^|]*\|\s*\*\*`none`\*\*\s*\|/);
+    expect(t).toContain('`no_verdict`');
+    // and it must not be readable as a pass
+    expect(t).toMatch(/`gate: "none"` is NOT a synonym for `"pass"`/);
+    // what ran is recorded, so it is recoverable rather than inferred
+    expect(t).toContain('"ran_phase"');
+    expect(t).toContain('"exit"');
+  });
+
+  test.each(FILES)('%s: the recommendation line survives a round with no verdict', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/WHEN NO GATE VERDICT EXISTS, THE LINE IS STILL REQUIRED/);
+    // the failure mode is a manufactured ship/fix line, so the ban is explicit
+    expect(t).toMatch(/ITS ACTION IS NEVER SHIP OR FIX/);
+    // step 5a must not promise a verdict it may not have
+    expect(t).not.toMatch(/After presenting Codex's verbatim\s+output and the GATE verdict/);
+  });
+
   test.each(FILES)('%s: only an announced final_gate phase may end a lane', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
     // the invariant, wired to the producer rather than to a helper's existence

@@ -2136,8 +2136,9 @@ promised in advance what any particular code means. Writing `"pass"` for a round
 puts a convergence claim into the review log that no gate ever made.
 
 5a. **Synthesis recommendation (REQUIRED).** After presenting Codex's verbatim
-output and the GATE verdict, emit ONE recommendation line summarizing what the
-user should do, in the canonical format the AskUserQuestion judge grades:
+output and whatever step 5 established — a gate verdict, or the fact that no gate
+verdict exists — emit ONE recommendation line summarizing what the user should do,
+in the canonical format the AskUserQuestion judge grades:
 
 ```
 Recommendation: <action> because <one-line reason that names the most actionable finding>
@@ -2149,6 +2150,17 @@ Examples (the strongest reasons compare against an alternative — another findi
 - `Recommendation: Investigate the race condition Codex flagged at billing.ts:117 before merging because the silent-corruption failure mode is harder to detect post-ship than the harness gap Codex also raised, which is fixable in a follow-up.`
 
 The reason must engage with a specific finding (or compare against alternatives — other findings, fix-vs-ship, fix order). Boilerplate reasons ("because it's better", "because adversarial review found things") fail the format. The recommendation is the ONE line a user reads when they don't have time for the verbatim output. **Never silently auto-decide; always emit the line.**
+
+⚠ **WHEN NO GATE VERDICT EXISTS, THE LINE IS STILL REQUIRED — AND ITS ACTION IS NEVER SHIP OR FIX.**
+The examples above all assume a completed review with findings to weigh, which a loop-only,
+unfinished or blocked round does not have. Following them literally there would manufacture a
+ship/fix recommendation to satisfy the format, misstating a review that never completed — the format
+would be satisfied and the sentence would be false. Recommend the action the round's actual state
+calls for, and name that state as the reason:
+
+- `Recommendation: Fix the two P2s and run /codex review again because the cheap round found work, so no gate has run on this lane yet and nothing about convergence has been established.`
+- `Recommendation: Re-run the poll block because the adapter has not returned yet — no verdict exists, and reporting the loop's findings as the round's outcome would present an unfinished invocation as a completed one.`
+- `Recommendation: Fix gate readiness before spending another round because the adapter reported the gate backend cannot run, so this lane cannot converge no matter how many rounds it buys.`
 
 6. **Cross-model comparison:** If `/review` (Claude's own review) was already run
    earlier in this conversation, compare the two sets of findings:
@@ -2166,10 +2178,28 @@ CROSS-MODEL ANALYSIS:
 ~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"codex-review","timestamp":"TIMESTAMP","status":"STATUS","gate":"GATE","findings":N,"findings_fixed":N,"commit":"'"$(git rev-parse --short HEAD)"'"}'
 ```
 
-Substitute: TIMESTAMP (ISO 8601), STATUS ("clean" if PASS, "issues_found" if FAIL),
-GATE ("pass" or "fail"), findings (from GATE_FINDINGS_JSON's p1+p2 when a block was
-printed, else the count of [P1] + [P2] markers),
-findings_fixed (count of findings that were addressed/fixed before shipping).
+Substitute: TIMESTAMP (ISO 8601), findings (from GATE_FINDINGS_JSON's p1+p2 when a block was
+printed, else the count of [P1] + [P2] markers), findings_fixed (count of findings that were
+addressed/fixed before shipping).
+
+**STATUS and GATE follow the step-5 invariant and must not be filled in from findings alone.**
+A gate verdict is the only thing that licenses `"pass"`/`"fail"`, and a round with no findings is
+not thereby a passing round:
+
+| what step 5 established | `status` | `gate` |
+|---|---|---|
+| the gate ran and passed | `clean` | `pass` |
+| the gate ran and failed | `issues_found` | `fail` |
+| **no gate verdict exists** — a loop-only round, an unfinished one, or a lane the gate cannot serve | `issues_found` if the round printed findings, else **`no_verdict`** | **`none`** |
+
+⚠ **`gate: "none"` is NOT a synonym for `"pass"`, and the third row is the one that decides whether
+this log can be trusted.** Without it a caller has no truthful value to write, and the reflex is to
+reach for `clean`/`pass` because the round produced no failures — recording a lane the gate never
+spoke on as converged, which is the exact claim a later session reads back. Add
+`"ran_phase":"<_OV_RAN_PHASE, or empty>"` and `"exit":<the adapter's exit code>` alongside them, so
+what actually ran is recoverable from the log rather than inferred from a verdict that was never
+issued. (`gstack-review-log` validates only that the payload parses as JSON — verified by reading
+it — so these extra keys are safe to add.)
 
 8. Clean up temp files:
 ```bash
