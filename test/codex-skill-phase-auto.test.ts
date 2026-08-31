@@ -189,9 +189,38 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // prompt with --codex-mode at its `exec` default: a DIFF-scoped round reported as the
   // repo-scoped gate. Not an edge case — outside_voice_loop defaults to codex on an unconfigured
   // install, and the size-cap and runaway-cap fallbacks land there too.
-  test.each(FILES)('%s: the auto route also requires the resolved phase to be loop', (_l, file) => {
+  // RE-DERIVED. This asserted that the auto route ALSO required the resolved phase to be `loop`,
+  // which was right while the loop launcher ran a gate round diff-scoped. Passing --codex-mode
+  // review removed that reason, and the extra condition then had a cost of its own: a
+  // straight-to-gate review fell through to `exec --phase final_gate`, skipping the adapter's
+  // auto_resolved branch in preflight_gate() — so round 1 could bypass the structural-sweep
+  // refusal. Whether a plain review demanded a sweep depended on ledger state, which is not a rule
+  // anyone could follow. The guard now asserts the single condition AND the thing that made the
+  // second one unnecessary, so removing either fails here.
+  test.each(FILES)('%s: the auto route is taken on repo opt-in, with the gate shape preserved', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
-    expect(t).toMatch(/_REVIEW_REPO:-\}" = "\$\{_REVIEW_AUTO_REPO:-\}"[\s\S]{0,200}?_OV_RESOLVED_PHASE:-\}" = "loop"/);
+    expect(t).toMatch(/_REVIEW_REPO:-\}" = "\$\{_REVIEW_AUTO_REPO:-\}"[\s\S]{0,120}?_REVIEW_ROUTE=auto/);
+    expect(t).not.toMatch(/_REVIEW_AUTO_REPO:-\}"[\s\S]{0,200}?_OV_RESOLVED_PHASE:-\}" = "loop"/);
+    expect(t).toMatch(/_OV_PHASE" = "auto" \]; then _OV_MODE=review/);
+  });
+
+  // ── A PLAIN REVIEW HAS THREE OUTCOMES UNDER auto, AND THE REPORTING SAYS SO ───────────────────
+  // Before this change every plain review ended at the gate, so GATE: PASS|FAIL were the only
+  // shapes. Under auto a review can stop after the loop or not run at all, and flattening either
+  // into GATE: PASS reports a lane as converged when the gate has not spoken.
+  test.each(FILES)('%s: the presentation carries loop and not-run shapes', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toContain('LOOP: CONTINUE');
+    expect(t).toContain('LOOP: CLEAN — gate owed');
+    expect(t).toMatch(/gate` is `"pass"`\/`"fail"` ONLY/);
+  });
+
+  // ── PARTIAL OUTPUT IS WITHHELD WHILE THE ROUND RUNS ──────────────────────────────────────────
+  // Under auto a 125 can mean the loop half finished and the gate is still running, so the file on
+  // disk holds a complete clean-looking review from an unfinished invocation.
+  test.each(FILES)('%s: review output is withheld on a still-running round', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/_OV_EXIT" = "125" \]; then[\s\S]{0,300}?review output withheld/);
   });
 
   // ── THE ANNOUNCEMENT BEATS THE PROBE ─────────────────────────────────────────────────────────

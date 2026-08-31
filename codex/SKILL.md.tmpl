@@ -359,8 +359,14 @@ _REVIEW_ROUTE=gate
 # is nothing to promote — the lane has converged and the gate is owed — so the existing inline
 # gate path is exactly the right thing to run, and it is already repo-scoped, already
 # --codex-mode review, already 330s. `auto` is only interesting when a loop round is going to run.
-if [ "${_REVIEW_REPO:-}" = "${_REVIEW_AUTO_REPO:-}" ] && [ -n "${_REVIEW_REPO:-}" ] \
-   && [ "${_OV_RESOLVED_PHASE:-}" = "loop" ]; then
+# ONE CONDITION: the repo opts in. An earlier revision also required the resolved phase to be
+# `loop`, because the loop launcher then ran a gate round DIFF-scoped. Passing --codex-mode review
+# removed that reason, and the extra condition had a cost of its own: a straight-to-gate review
+# fell through to `exec --phase final_gate`, which skips the adapter's auto_resolved branch in
+# preflight_gate() — so round 1 could bypass the structural-sweep refusal and be presented as an
+# ordinary gate verdict instead of ROUND NOT RUN. Whether a plain review in this repo demanded a
+# sweep then depended on ledger state, which is not a rule anyone could follow.
+if [ "${_REVIEW_REPO:-}" = "${_REVIEW_AUTO_REPO:-}" ] && [ -n "${_REVIEW_REPO:-}" ]; then
   _REVIEW_ROUTE=auto
 fi
 echo "REVIEW_ROUTE: $_REVIEW_ROUTE   (repo=${_REVIEW_REPO:-unknown} resolved=${_OV_RESOLVED_PHASE:-unknown})"
@@ -862,7 +868,14 @@ fi
 # /dev/null) surviving in the sibling branch of the fix for it, which is why this is structural
 # rather than another per-branch cat: a round's output is worth printing whatever its exit code,
 # and a failed round's partial output is often the only diagnostic there is.
-if [ -s "$_OV_OUT" ]; then
+# ⚠ NOT ON 125. Under `auto`, exit 125 can mean the LOOP half finished and the promoted gate is
+# still running — so this file already holds a complete, clean-looking review from an invocation
+# the skill simultaneously calls unfinished. Showing it is the "looks clean before the gate ran"
+# signal this change exists to remove. On a FAILED round the partial output is still printed,
+# because there it is often the only diagnostic.
+if [ "$_OV_EXIT" = "125" ]; then
+  echo "--- review output withheld: the round has NOT finished. Any output on disk is a partial invocation (under auto, possibly a clean loop half with the gate still running) and must not be read as a result. Re-run the poll block."
+elif [ -s "$_OV_OUT" ]; then
   echo "--- review output ---"; cat "$_OV_OUT"; echo "--- end review output ---"
 fi
 # THE LABEL FOLLOWS THE PHASE THAT ACTUALLY RAN, WHICH UNDER `auto` IS NOT KNOWN UNTIL NOW.
@@ -1272,6 +1285,30 @@ or
 ```
 GATE: FAIL (N critical findings)
 ```
+
+⚠ **A `--phase auto` ROUND HAS THREE HONEST OUTCOMES, NOT TWO, AND ONLY ONE OF THEM IS A GATE
+VERDICT.** The shapes above are the gate's, and they were the only shapes because before VAS-2402
+every plain review ended at the gate. Under `auto` a plain review can also stop after the loop, or
+not run at all — and flattening either into `GATE: PASS` reports a lane as converged when the gate
+has not spoken. Use the shape that matches the `BAR:` line the round printed:
+
+```
+LOOP: CONTINUE (N findings — P1 x, P2 y)   Tokens: … | Est. cost: …
+   The cheap round found work. Fix, commit, and run /codex review again — the lane has NOT
+   converged and the gate has not run.
+
+LOOP: CLEAN — gate owed                    Tokens: … | Est. cost: …
+   No P1 and no P2 at the cheap tier. This is NOT convergence: run /codex review again and the
+   adapter promotes to the gate. Only the gate's verdict ends a lane.
+
+ROUND NOT RUN — <the adapter's reason>
+   Neither a PASS nor a FAIL. Nothing was reviewed; report it as such and fix the cause.
+```
+
+**And the persistence line below takes the same three states.** `gate` is `"pass"`/`"fail"` ONLY
+for a round that reached the gate; a loop round records `"loop-continue"` or `"loop-clean"`, and a
+round that did not run records `"not-run"`. Writing `"pass"` for any of the others puts a
+convergence claim into the review log that no gate ever made.
 
 5a. **Synthesis recommendation (REQUIRED).** After presenting Codex's verbatim
 output and the GATE verdict, emit ONE recommendation line summarizing what the
