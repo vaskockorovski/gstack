@@ -240,10 +240,11 @@ esac
 # So resolve it to a real phase FIRST, and keep the resolved value: every follower below reads it.
 _OV_RESOLVED_PHASE="$_OV_PHASE"
 if [ "$_OV_PHASE" = "auto" ]; then
-  # THE SAME QUESTION THE EXEC WILL ASK. resolve-phase defaults to origin/main and to
-  # non-explicit mode; the review below runs `exec --phase auto --explicit --base origin/<base>`.
+  # THE SAME QUESTION THE EXEC WILL ASK. resolve-phase defaults to the repository's own default
+  # branch and to non-explicit mode; the review below runs
+  # `exec --phase auto --explicit --base origin/<base>`.
   # Omitting either flag lets this resolution disagree with the phase the adapter actually picks —
-  # on any branch whose base is not main, or when codex_reviews=disabled and the user asked for a
+  # on any branch whose base is not the default one, or when codex_reviews=disabled and the user asked for a
   # review explicitly. The two would then diverge silently, and Step 0.4 would probe the wrong
   # backend: skipping the binary and auth checks a real gate round needs, or refusing a hosted
   # loop that was allowed. Two producers that answer differently is the defect this whole change
