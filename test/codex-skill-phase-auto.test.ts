@@ -271,6 +271,16 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // payload, not the paragraph.
   // An auto review that stops on the loop half emits OV_FINDINGS_JSON, not GATE_FINDINGS_JSON.
   // Naming only the latter writes a loop round to the log with the wrong count or none.
+  // Swept, not found by a round: every consumer of a verdict requires exit 0, and GATE_BACKEND
+  // alone admitted any non-125 exit — so a gate that announced itself and then died printed a
+  // gate marker for a round with no verdict. One condition, asserted at the only site that has it.
+  test.each(FILES)('%s: the gate backend marker takes the same conjunct as the verdict', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/if \[ "\$_OV_EXIT" = "0" \] && \[ "\$_OV_RAN_PHASE" = "final_gate" \]; then\s*\n\s*echo "GATE_BACKEND:/);
+    expect(t).not.toMatch(/if \[ "\$_OV_EXIT" != "125" \] && \[ "\$_OV_RAN_PHASE" = "final_gate" \]/);
+    expect(t).toMatch(/THE CONDITION IS `= 0`, NOT `!= 125`/);
+  });
+
   test.each(FILES)('%s: the findings count reads whichever block was printed', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
     expect(t).toMatch(/WHICHEVER structured block the round\s+printed/);
@@ -416,7 +426,16 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   test.each(FILES)('%s: a still-running round announces no phase, label or backend', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
     expect(t).toMatch(/_OV_EXIT" = "125" \]; then[\s\S]{0,300}?PHASE_THAT_RAN: unknown/);
-    expect(t).toMatch(/_OV_EXIT" != "125" \] && \[ "\$_OV_RAN_PHASE" = "final_gate"/);
+    // RE-DERIVED. This asserted the literal `!= 125` guard on GATE_BACKEND, which is the CONDITION
+    // rather than the property it was protecting: a still-running round must not print a gate
+    // marker. The condition tightened to `= 0` — strictly stronger, since 125 is not 0 — and this
+    // guard failed anyway, because it was pinned to the text. Assert the property; the sibling
+    // test asserts the exact condition once, at the site that owns it.
+    // Anchor by ADJACENCY, not by slicing around the first match: three sites emit GATE_BACKEND
+    // and indexOf found the plain gate path, which has no _OV_RAN_PHASE condition at all. The
+    // _OV_RAN_PHASE conjunct is what uniquely identifies the auto site.
+    expect(t).toMatch(/\[ "\$_OV_RAN_PHASE" = "final_gate" \]; then\s*\n\s*echo "GATE_BACKEND:/);
+    expect(t).not.toMatch(/!= "125" \] && \[ "\$_OV_RAN_PHASE" = "final_gate" \]/);
   });
 
   // ── EXIT 6 stays enumerated on this path ─────────────────────────────────────────────────────

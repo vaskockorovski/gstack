@@ -942,7 +942,16 @@ if [ "$_OV_RAN_PHASE" = "final_gate" ]; then _OV_LABEL=GATE_FINDINGS_JSON; else 
 # rather than as a plain PASS. Emitting the gate LABEL without the gate BACKEND makes a weaker
 # review look like a full one, which is the same false-clean shape as the `<none>` payload fixed
 # one round earlier: half a contract is not a contract.
-if [ "$_OV_EXIT" != "125" ] && [ "$_OV_RAN_PHASE" = "final_gate" ]; then
+#
+# ⚠ THE CONDITION IS `= 0`, NOT `!= 125`. Found by sweeping this fact across its sites rather
+# than by a round: every other consumer of a verdict here requires exit 0, and this one alone
+# admitted every failing exit. `_OV_RAN_PHASE` comes from an announcement emitted BEFORE the
+# round runs, so a gate that announced itself and then died at 3/4/5/6 printed `GATE_BACKEND:`
+# — a gate marker for a round that produced no verdict, which is the same half-a-contract shape
+# the comment above describes, with the halves swapped. The failure line below still says the
+# round failed, so this was never a silent false clean; it was one marker disagreeing with every
+# other signal in the same output, which is how a reader ends up trusting the wrong one.
+if [ "$_OV_EXIT" = "0" ] && [ "$_OV_RAN_PHASE" = "final_gate" ]; then
   echo "GATE_BACKEND: $(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase final_gate 2>/dev/null || echo unknown)"
 fi
 if [ "$_OV_EXIT" = "0" ] && [ -s "$_OV_FINDINGS" ]; then
