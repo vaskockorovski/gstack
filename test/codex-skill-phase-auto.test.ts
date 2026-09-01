@@ -228,37 +228,56 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // _FOCUS_PHASE, which accepted only loop|final_gate — so a focused review in the rollout repo
   // could never enter the auto lane whatever Step 0.4 resolved. r11 fixed two authorities and
   // there were three. The guard now asserts every site that constrains a phase value.
-  test.each(FILES)('%s: the focused-review launcher admits auto too', (_l, file) => {
+  // RE-DERIVED, inverted. r12 admitted `auto` here; r13 showed that admitting it without wiring
+  // this branch's four literal followers (codex-mode, timeout, effort, labels) to the
+  // announcement would report a loop or a promoted diff-scoped gate as a clean final gate. The
+  // alternative is a second copy of that machinery on this branch, which the 540s note above
+  // already refuses for the poller. So the limit is STATED, and the guard now asserts that the
+  // exclusion is deliberate and reachable — a limit nobody can find is a bug report waiting.
+  test.each(FILES)('%s: the focused path excludes auto, and says where to get it', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
-    expect(t).toContain('_FOCUS_PHASE="<<SET-ME: loop | final_gate | auto>>"');
-    expect(t).toMatch(/^\s*loop\|final_gate\|auto\) ;;/m);
-    // the STOP message is the fourth statement of the rule and must agree with the other three
-    expect(t).toMatch(/STOP: _FOCUS_PHASE was not substituted[\s\S]{0,400}?Focus is not an axis/);
-    expect(t).toMatch(/THIS LINE IS A FOCUSED REVIEW, AND FOCUS IS NOT AN AXIS OF THE PHASE RULE/);
-    // and the superseded two-value form must be gone
-    expect(t).not.toContain('_FOCUS_PHASE="<<SET-ME: loop | final_gate>>"');
+    expect(t).toContain('_FOCUS_PHASE="<<SET-ME: loop | final_gate>>"');
+    expect(t).toMatch(/^\s*loop\|final_gate\) ;;/m);
+    expect(t).toMatch(/`auto` IS DELIBERATELY NOT AVAILABLE HERE, AND THAT IS A STATED LIMIT/);
+    // the way out is named, so the limit is actionable rather than a dead end
+    expect(t).toMatch(/To use the auto lane, run a\s*\n?#?\s*plain `\/codex review`/);
+    expect(t).toMatch(/STOP: _FOCUS_PHASE was not substituted[\s\S]{0,400}?'auto' is not available on the focused path/);
+    // the withdrawn admission must not creep back
+    expect(t).not.toContain('_FOCUS_PHASE="<<SET-ME: loop | final_gate | auto>>"');
   });
 
-  test.each(FILES)('%s: instructions are not an axis of the phase rule, at either site', (_l, file) => {
+  // RE-DERIVED, and this one encoded a rule that was WRONG rather than merely stale. It asserted
+  // "instructions are not an axis", which is true of _REVIEW_ROUTE (it keys on the repo alone)
+  // and false of THIS line: a focused review never reaches that launcher, so probing `auto` for
+  // it probes a backend the invocation will never use. Focus is an axis here and only here.
+  // Asserted on the rule LINES, which is what a session reads, not on the prose around them.
+  test.each(FILES)('%s: the phase rule names the focused case, at both sites', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
-    // Assert the RULE LINE, not only the paragraph explaining it. A mutation probe reverted the
-    // line to "a PLAIN review" while leaving the explanation intact and this guard stayed green —
-    // it was testing the commentary, which is the same defect as asserting a sort exists rather
-    // than asserting the resulting order.
-    expect(t).toMatch(/^#\s+auto\s+ANY OTHER REVIEW in a claude-fleet-config worktree\.$/m);
-    expect(t).toMatch(/^#\s+final_gate\s+any other review anywhere else\.$/m);
-    expect(t).toMatch(/"ANY OTHER REVIEW" IS LITERAL/);
-    expect(t).toMatch(/WHETHER INSTRUCTIONS WERE GIVEN IS NOT AN AXIS HERE/);
-    // the STOP message — the OTHER authority — carries the same rule, not the old wording
-    expect(t).toMatch(/STOP: _OV_PHASE was not substituted[\s\S]{0,400}?instructions are not an axis/);
-    // and the superseded wording is gone from both
+    expect(t).toMatch(/^#\s+auto\s+an UNFOCUSED review in a claude-fleet-config worktree/m);
+    expect(t).toMatch(/^#\s+final_gate\s+every other review: any FOCUSED review/m);
+    expect(t).toMatch(/FOCUS IS AN AXIS HERE, AND ONLY HERE/);
+    // bare /codex counts as unfocused — the entry point that has no instructions to be focused by
+    expect(t).toMatch(/Bare `\/codex` that resolves to Review at Step 0\.3 counts as UNFOCUSED/);
+    // the STOP message is the second authority and must carry the same rule
+    expect(t).toMatch(/STOP: _OV_PHASE was not substituted[\s\S]{0,500}?any FOCUSED review wherever it runs/);
+    // every superseded wording is gone from both sites
     expect(t).not.toMatch(/`auto` for a PLAIN review/);
-    expect(t).not.toMatch(/'auto' for a plain review in a claude-fleet-config worktree/);
+    expect(t).not.toMatch(/WHETHER INSTRUCTIONS WERE GIVEN IS NOT AN AXIS HERE/);
+    expect(t).not.toMatch(/'auto' for ANY OTHER review in a claude-fleet-config worktree/);
   });
 
   // The prose said no-verdict rounds must record ran_phase and exit; the RUNNABLE payload did not
   // carry either field. The command is what gets copied, so the prose was decoration. Assert the
   // payload, not the paragraph.
+  // An auto review that stops on the loop half emits OV_FINDINGS_JSON, not GATE_FINDINGS_JSON.
+  // Naming only the latter writes a loop round to the log with the wrong count or none.
+  test.each(FILES)('%s: the findings count reads whichever block was printed', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/WHICHEVER structured block the round\s+printed/);
+    expect(t).toMatch(/`GATE_FINDINGS_JSON` on a gate round, `OV_FINDINGS_JSON` on a loop round/);
+    expect(t).not.toMatch(/findings \(from GATE_FINDINGS_JSON's p1\+p2 when a block was\s+printed, else/);
+  });
+
   test.each(FILES)('%s: the runnable log payload carries the announced phase', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
     const payload = t.slice(t.indexOf('gstack-review-log'), t.indexOf('gstack-review-log') + 400);

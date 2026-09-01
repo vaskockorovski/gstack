@@ -975,18 +975,23 @@ per-mode default below. Otherwise, use the per-mode defaults:
 # SET THIS LINE from the mode Step 0.3 ALREADY RESOLVED — do not re-derive it from what the
 # user typed:
 #   loop        any `review --loop`, focused or not.
-#   auto        ANY OTHER REVIEW in a claude-fleet-config worktree.
-#   final_gate  any other review anywhere else.
+#   auto        an UNFOCUSED review in a claude-fleet-config worktree — `/codex review`, or
+#               bare `/codex` once the user picks Review at Step 0.3.
+#   final_gate  every other review: any FOCUSED review (`/codex review <instructions>`)
+#               wherever it runs, and any review outside a claude-fleet-config worktree.
 #   none        challenge/consult/plan, which call codex directly and must keep their gating.
 #
-# ⚠ "ANY OTHER REVIEW" IS LITERAL, AND THE EARLIER WORDING ("a PLAIN review") WAS NOT.
-# Three entry points reach review mode and all three take the same value: `/codex review`,
-# `/codex review <instructions>`, and bare `/codex` once the user picks Review at Step 0.3.
-# WHETHER INSTRUCTIONS WERE GIVEN IS NOT AN AXIS HERE. The route below keys on the REPO and
-# nothing else (one condition, `_REVIEW_REPO = _REVIEW_AUTO_REPO`), so reading "plain" as
-# "unfocused" hands a focused review `final_gate` while the route resolves `auto` — the two
-# then disagree, which is the precise failure the ⚠ below describes. The rule is: no `--loop`
-# flag, and the repo decides.
+# ⚠ FOCUS IS AN AXIS HERE, AND ONLY HERE — this is the one thing about the rule that is easy to
+# get backwards, and a round got it backwards in both directions before it settled. `auto` is a
+# property of the PLAIN-review launcher: `_REVIEW_ROUTE` keys on the repo alone, so on that path
+# instructions genuinely are not an axis. But a FOCUSED review does not run through that launcher
+# at all — it runs the inline focused branch, which has no auto machinery and says so in its own
+# comment. So THIS line, which decides which backend to probe for readiness, has to name the
+# focused case separately or it probes a backend the invocation will never use. The rule is: no
+# `--loop`; then the repo decides for an unfocused review, and a focused one takes the gate.
+#
+# Bare `/codex` that resolves to Review at Step 0.3 counts as UNFOCUSED — it carries no
+# instructions — and takes `auto` in the rollout repo like any other plain review.
 # ⚠ STEP 0.3's ROUTING TABLE IS THE AUTHORITY, not this line. It said `final_gate` for every
 # review without the flag, which is the pre-VAS-2402 rule — and a caller obeying it here would
 # skip the inline gate (because the route resolves to auto) and then hand the loop launcher
@@ -1032,7 +1037,7 @@ _OV_PHASE="<<SET-ME: loop | final_gate | auto | none>>"   # ← SUBSTITUTE THIS 
 # the line the reader actually has to edit.
 case "$_OV_PHASE" in
   loop|final_gate|auto|none) ;;
-  *) echo "STOP: _OV_PHASE was not substituted (still '$_OV_PHASE'). Step 0.3 has already resolved the mode; carry it here — 'loop' for any review --loop; 'auto' for ANY OTHER review in a claude-fleet-config worktree (including a focused one, and including bare /codex once Review is picked — instructions are not an axis); 'final_gate' for any other review anywhere else; 'none' for challenge/consult/plan. Re-run this block after substituting." >&2
+  *) echo "STOP: _OV_PHASE was not substituted (still '$_OV_PHASE'). Step 0.3 has already resolved the mode; carry it here — 'loop' for any review --loop; 'auto' for an UNFOCUSED review in a claude-fleet-config worktree (including bare /codex once Review is picked); 'final_gate' for every other review — any FOCUSED review wherever it runs, and any review outside such a worktree; 'none' for challenge/consult/plan. Re-run this block after substituting." >&2
      return 2 2>/dev/null || exit 2 ;;
 esac
 
@@ -1919,21 +1924,28 @@ echo "REVIEW_EFFORT: $_REVIEW_EFFORT"   # printed so an unapplied --xhigh is vis
 # same reason this file records there: a silent default makes "the user did not type --loop" and
 # "the agent forgot to substitute" produce identical output, which is how that path stayed
 # unreachable for four rounds. One convention, not two.
-# SET THIS LINE from the mode Step 0.3 ALREADY RESOLVED, using the SAME rule as `_OV_PHASE`:
-# `loop` if the user typed --loop; otherwise `auto` in a claude-fleet-config worktree and
-# `final_gate` anywhere else. Do not re-derive it from the instructions.
+# SET THIS LINE from the mode Step 0.3 ALREADY RESOLVED: `loop` if the user typed --loop,
+# otherwise `final_gate`. Do not re-derive it from the instructions.
 #
-# ⚠ THIS LINE IS A FOCUSED REVIEW, AND FOCUS IS NOT AN AXIS OF THE PHASE RULE. It accepted only
-# `loop|final_gate`, which meant `/codex review <focus>` in the rollout repo could never enter the
-# auto lane no matter what Step 0.4 resolved — a focused review there bypassed loop-then-gate
-# entirely, and disagreed with 0.4's readiness probe about whether Codex was even required. That
-# is the THIRD site stating this one rule; 0.4's comment and its STOP message are the other two,
-# and a fix that reaches only some of them leaves the rule saying different things in different
-# places. If you change the rule, change all three.
-_FOCUS_PHASE="<<SET-ME: loop | final_gate | auto>>"   # ← SUBSTITUTE THIS WHOLE STRING
+# ⚠ `auto` IS DELIBERATELY NOT AVAILABLE HERE, AND THAT IS A STATED LIMIT RATHER THAN AN
+# OVERSIGHT. A round briefly admitted it, reasoning that focus is not an axis of the phase rule.
+# That is true of `_REVIEW_ROUTE`, which keys on the repo alone — but `_REVIEW_ROUTE` governs the
+# PLAIN path, and this branch is not it. Four things here follow the phase LITERALLY (the
+# `--codex-mode exec`, the timeout, the effort, and the findings labels below), and under `auto`
+# the adapter may promote mid-invocation, so every one of them would then describe a phase that is
+# no longer running — reporting a loop or a diff-scoped promoted gate as a clean final gate, the
+# exact false-clean this rollout exists to prevent. Making them follow the announcement instead
+# means a second copy of that machinery on this branch, which is the trade the 540s note above
+# already refuses for the poller, for the same reason.
+#
+# So: a focused review runs the gate directly, wherever you are. **To use the auto lane, run a
+# plain `/codex review`** — same repo, same diff, and the loop-then-gate routing applies. Step
+# 0.4's rule names this case explicitly so its readiness probe and this launcher agree; if you
+# change one, change both.
+_FOCUS_PHASE="<<SET-ME: loop | final_gate>>"   # ← SUBSTITUTE THIS WHOLE STRING
 case "$_FOCUS_PHASE" in
-  loop|final_gate|auto) ;;
-  *) echo "STOP: _FOCUS_PHASE was not substituted (still '$_FOCUS_PHASE'). Step 0.3 resolved the mode already — carry it here, same rule as _OV_PHASE: 'loop' when the user typed --loop; otherwise 'auto' in a claude-fleet-config worktree and 'final_gate' anywhere else. Focus is not an axis." >&2; return 2 2>/dev/null || exit 2 ;;
+  loop|final_gate) ;;
+  *) echo "STOP: _FOCUS_PHASE was not substituted (still '$_FOCUS_PHASE'). Step 0.3 resolved the mode already — carry it here: 'loop' when the user typed --loop, otherwise 'final_gate'. 'auto' is not available on the focused path; run a plain /codex review to use the auto lane." >&2; return 2 2>/dev/null || exit 2 ;;
 esac
 echo "FOCUS_PHASE: $_FOCUS_PHASE"   # printed so an unapplied --loop is visible, not inferred
 # THE BUDGET FOLLOWS THE PHASE (codex r20 P2, self-inflicted by r18). r18 routed this branch to
@@ -2217,8 +2229,10 @@ CROSS-MODEL ANALYSIS:
 ```
 
 Substitute: TIMESTAMP (ISO 8601), RAN_PHASE (`$_OV_RAN_PHASE`, or empty if the adapter announced
-nothing), EXIT (the adapter's exit code, unquoted), findings (from GATE_FINDINGS_JSON's p1+p2 when a block was
-printed, else the count of [P1] + [P2] markers), findings_fixed (count of findings that were
+nothing), EXIT (the adapter's exit code, unquoted), findings (from WHICHEVER structured block the round
+printed — `GATE_FINDINGS_JSON` on a gate round, `OV_FINDINGS_JSON` on a loop round, since an
+`auto` review that stops on the loop half emits the latter and naming only the former writes a
+loop round to the log with no count or the wrong one — else the count of [P1] + [P2] markers), findings_fixed (count of findings that were
 addressed/fixed before shipping).
 
 **STATUS and GATE follow the step-5 invariant and must not be filled in from findings alone.**
