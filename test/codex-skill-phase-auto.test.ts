@@ -299,10 +299,27 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     // announcement for an explicit phase, so following that rule wrote an empty phase on every
     // successful non-auto review. The value is literal on those paths, not unknown. Assert the
     // per-path table, and that empty is refused outright.
-    expect(t).toMatch(/\| the auto path \| `\$_OV_ANNOUNCED_PHASE` \|/);
-    expect(t).toMatch(/\| the inline gate path \| `final_gate`/);
+    // Every path that reaches step 7 has a row, asserted one by one. Two consecutive rounds each
+    // found a MISSING row and both were not-run cases, so this guard exists to make the set
+    // complete rather than the common cases correct.
+    expect(t).toMatch(/\| auto, round finished \| `\$_OV_ANNOUNCED_PHASE` \| `\$_OV_EXIT` \|/);
+    expect(t).toMatch(/\| auto, round failed \|/);
+    expect(t).toMatch(/\| auto, still running \(125\) \| `unknown`/);
+    expect(t).toMatch(/\| inline gate, gate ran \| `final_gate`/);
+    expect(t).toMatch(/gate NEVER INVOKED\*\* \(`_GATE_MODE != ready`\) \| \*\*`none`\*\* \| \*\*`null`\*\* \|/);
     expect(t).toMatch(/\| the focused path \| `\$_FOCUS_PHASE`/);
-    expect(t).toMatch(/`""` IS NOT A LEGAL VALUE HERE/);
+    expect(t).toMatch(/THE FIFTH ROW IS THE ONE THAT LOOKS LIKE IT DOES NOT NEED TO EXIST/);
+    expect(t).toMatch(/`""` IS NOT A LEGAL VALUE IN THE PHASE COLUMN/);
+  });
+
+  // NEEDS_CODEX: no was a claim about the WHOLE review; under auto it can only be a claim about
+  // the half the round starts on, since a clean loop promotes to a possibly Codex-backed gate.
+  test.each(FILES)('%s: NEEDS_CODEX is scoped to the phase the round starts on', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/ON `--phase auto` THAT IS A STATEMENT ABOUT THE FIRST HALF ONLY/);
+    expect(t).toMatch(/the phase this review is starting\s*\n?does not route to Codex/);
+    // the superseded absolute claim must be gone
+    expect(t).not.toMatch(/no phase of this review routes\s*\n?to Codex, so neither/);
   });
 
   test.each(FILES)('%s: the review log can express a round with no verdict', (_l, file) => {
@@ -444,7 +461,11 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // loop half's output as the gate's — a round that did not finish, reported as one that did.
   test.each(FILES)('%s: a still-running round announces no phase, label or backend', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
-    expect(t).toMatch(/_OV_EXIT" = "125" \]; then[\s\S]{0,300}?ANNOUNCED_PHASE: unknown/);
+    // It must ASSIGN, not only print: step 7 requires a value on every path, and printing
+    // `unknown` while leaving the variable unset made the still-running round the one case the
+    // log rule had no answer for.
+    expect(t).toMatch(/_OV_EXIT" = "125" \]; then[\s\S]{0,600}?_OV_ANNOUNCED_PHASE=unknown/);
+    expect(t).toMatch(/_OV_EXIT" = "125" \]; then[\s\S]{0,700}?ANNOUNCED_PHASE: unknown/);
     // RE-DERIVED. This asserted the literal `!= 125` guard on GATE_BACKEND, which is the CONDITION
     // rather than the property it was protecting: a still-running round must not print a gate
     // marker. The condition tightened to `= 0` — strictly stronger, since 125 is not 0 — and this

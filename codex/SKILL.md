@@ -1087,8 +1087,19 @@ CODEX_BIN=$(command -v codex || echo "")
 [ -z "$CODEX_BIN" ] && echo "NOT_FOUND" || echo "FOUND: $CODEX_BIN"
 ```
 
-If `NEEDS_CODEX: no`, skip this step AND Step 0.5 entirely — no phase of this review routes
-to Codex, so neither its absence nor its auth is a blocker. Note it and continue.
+If `NEEDS_CODEX: no`, skip this step AND Step 0.5 entirely — the phase this review is starting
+does not route to Codex, so neither its absence nor its auth is a blocker there. Note it and
+continue.
+
+⚠ **ON `--phase auto` THAT IS A STATEMENT ABOUT THE FIRST HALF ONLY, AND IT USED TO SAY MORE.**
+The probe reads the backend for `$_OV_RESOLVED_PHASE`, which under `auto` is the phase the round
+STARTS on. A clean loop promotes to the gate in the same invocation, and that gate may be
+Codex-backed — so `NEEDS_CODEX: no` cannot mean "no phase of this review routes to Codex", which
+is what this said before the auto lane existed. Skipping the install and auth guidance is still
+correct: the round begins on the hosted loop and reaches Codex only after a clean loop half, at
+which point the adapter's own error names what is missing. What is NOT correct is reading this
+line as a guarantee — if a promoted gate fails on a missing or unauthenticated Codex, that is the
+expected shape of this path, not a contradiction of the line above.
 
 Otherwise, if `NOT_FOUND`: stop and tell the user:
 "Codex CLI not found. Install it: `npm install -g @openai/codex` or see https://github.com/openai/codex"
@@ -1729,6 +1740,11 @@ fi
 # grade the loop half's output as the gate's — a round that did not finish, reported as one that
 # did, which is the whole class this file exists to close.
 if [ "$_OV_EXIT" = "125" ]; then
+  # ASSIGNED, not only printed. Step 7 requires a value on every path, and this branch printed
+  # `unknown` without ever setting the variable — so the one case where the round is still
+  # running was also the one case the log rule could not be followed, forcing an empty field or
+  # an invented value on exactly the unfinished round the field exists to mark.
+  _OV_ANNOUNCED_PHASE=unknown
   echo "ANNOUNCED_PHASE: unknown — the round has NOT finished. Any promotion notice above belongs to a gate half that is still executing; re-run the poll block. Nothing here is a verdict."
 else
 _OV_ANNOUNCED_PHASE="$_OV_RESOLVED_PHASE"
@@ -2249,16 +2265,31 @@ Substitute: TIMESTAMP (ISO 8601), EXIT (the adapter's exit code, unquoted), ANNO
 takes a value on EVERY path, because a row that cannot say whether it came from a cheap loop round
 or a real gate is the one thing this field was added to prevent:
 
-| the path that ran | `announced_phase` |
-|---|---|
-| the auto path | `$_OV_ANNOUNCED_PHASE` |
-| the inline gate path | `final_gate` — literal there, and the adapter emits no announcement for an explicit phase |
-| the focused path | `$_FOCUS_PHASE` — likewise literal |
+**EVERY path that reaches this step has a row.** Enumerated as a set rather than added one at a
+time — two consecutive rounds found a missing one, each time on a not-run case, because a rule
+written for the paths that work is a rule with no answer for the paths that do not:
 
-⚠ **`""` IS NOT A LEGAL VALUE HERE.** Only the auto path has an announcement to read, so a rule
-written as "empty if the adapter announced nothing" records an empty phase for every SUCCESSFUL
-non-auto review — the common case — and the field silently means nothing on most rows. On those
-paths the phase is not unknown, it is *literal*: take it from the branch. Then findings (from WHICHEVER structured block the round
+| the path that reached step 7 | `announced_phase` | `exit` |
+|---|---|---|
+| auto, round finished | `$_OV_ANNOUNCED_PHASE` | `$_OV_EXIT` |
+| auto, round failed | `$_OV_ANNOUNCED_PHASE` | `$_OV_EXIT` |
+| auto, still running (125) | `unknown` — the branch assigns it | `125` |
+| inline gate, gate ran | `final_gate` — literal, and the adapter emits no announcement for an explicit phase | `$_CODEX_EXIT` |
+| **inline gate, gate NEVER INVOKED** (`_GATE_MODE != ready`) | **`none`** | **`null`** |
+| the focused path | `$_FOCUS_PHASE` — likewise literal | `$_CODEX_EXIT` |
+
+⚠ **THE FIFTH ROW IS THE ONE THAT LOOKS LIKE IT DOES NOT NEED TO EXIST.** When the gate probe
+comes back anything but `ready` — disabled, misconfigured, unauthenticated — the branch stops
+BEFORE `gstack-outside-voice exec` runs, so there is no announcement and no exit code. Writing
+`final_gate` there fabricates a gate round that never started, and writing "the adapter's exit
+code" leaves the field blank; both make a not-run row indistinguishable from a real one, which is
+the distinction this whole step exists to preserve. `announced_phase: "none"` with a null exit says
+what actually happened. `gate` and `status` follow the table above — `none` and `no_verdict`.
+
+⚠ **`""` IS NOT A LEGAL VALUE IN THE PHASE COLUMN.** Only the auto path has an announcement to
+read, so a rule written as "empty if the adapter announced nothing" records an empty phase for
+every SUCCESSFUL non-auto review — the common case — and the field silently means nothing on most
+rows. On those paths the phase is not unknown, it is *literal*: take it from the branch. Then findings (from WHICHEVER structured block the round
 printed — `GATE_FINDINGS_JSON` on a gate round, `OV_FINDINGS_JSON` on a loop round, since an
 `auto` review that stops on the loop half emits the latter and naming only the former writes a
 loop round to the log with no count or the wrong one — else the count of [P1] + [P2] markers), findings_fixed (count of findings that were
