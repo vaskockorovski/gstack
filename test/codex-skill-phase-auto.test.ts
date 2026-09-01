@@ -180,8 +180,16 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // would read as a clean pass. The bar is now stated on both the block and no-block paths.
   test.each(FILES)('%s: the severity bar is stated even when there is no findings block', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
-    const m = t.match(/NO_FINDINGS_BLOCK — backend was codex[\s\S]{0,700}?BAR: loop/);
-    expect(m).not.toBeNull();
+    // Bounded by CONTENT, not by a character count. This was `{0,700}` and broke the moment an
+    // attribution notice was inserted between the two anchors — the guard was measuring the
+    // distance between them, which nothing promises to keep constant.
+    const start = t.indexOf('NO_FINDINGS_BLOCK — backend was codex');
+    const end = t.indexOf('elif [ "$_OV_EXIT" = "125" ]', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const branch = t.slice(start, end);
+    expect(branch).toContain('BAR: gate');
+    expect(branch).toContain('BAR: loop');
   });
 
   // ── auto IS ONLY TAKEN WHEN A LOOP ROUND WILL ACTUALLY RUN ───────────────────────────────────
@@ -314,6 +322,28 @@ describe('VAS-2402: --phase auto and the five followers', () => {
 
   // NEEDS_CODEX: no was a claim about the WHOLE review; under auto it can only be a claim about
   // the half the round starts on, since a clean loop promotes to a possibly Codex-backed gate.
+  // A promotion runs two rounds in ONE invocation writing to ONE stdout, and the promotion notice
+  // goes to stderr — so nothing in the captured output marks where the loop half ends. Worse in
+  // the DEFAULT config than an exotic one: the adapter deletes the findings file for a codex
+  // backend, so the common openrouter-loop → codex-gate promotion is guaranteed to have no
+  // structured block and to grade from a mixed stream.
+  test.each(FILES)('%s: a promoted round declares its output mixed and grades conservatively', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/MIXED OUTPUT: what follows is the loop half AND the gate half concatenated/);
+    // the superseded claim must be gone — it asserted the opposite of the truth
+    expect(t).not.toMatch(/The findings below are the GATE's/);
+    // the flag is initialised, so a stale yes cannot mark an unpromoted round as mixed
+    expect(t).toMatch(/^_OV_PROMOTED=no/m);
+    expect(t).toMatch(/_OV_PROMOTED=yes/);
+    // and the marker fallback errs toward FAIL, which is the recoverable direction
+    // Anchored to the CONDITION, not just the text. A probe replaced the guard condition with
+    // `if false` and this assertion stayed green: the notice was present and unreachable, which
+    // is indistinguishable from present and working if you only grep for the words.
+    expect(t).toMatch(/if \[ "\$\{_OV_PROMOTED:-no\}" = "yes" \]; then\s*\n\s*echo "ATTRIBUTION: unavailable/);
+    expect(t).toMatch(/ATTRIBUTION: unavailable[\s\S]{0,400}?any \[P1\] is a FAIL for this round/);
+    expect(t).toMatch(/errs toward FAIL deliberately/);
+  });
+
   test.each(FILES)('%s: NEEDS_CODEX is scoped to the phase the round starts on', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
     expect(t).toMatch(/ON `--phase auto` THAT IS A STATEMENT ABOUT THE FIRST HALF ONLY/);

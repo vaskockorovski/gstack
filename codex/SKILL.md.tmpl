@@ -939,6 +939,8 @@ if [ "$_OV_EXIT" = "125" ]; then
   echo "ANNOUNCED_PHASE: unknown — the round has NOT finished. Any promotion notice above belongs to a gate half that is still executing; re-run the poll block. Nothing here is a verdict."
 else
 _OV_ANNOUNCED_PHASE="$_OV_RESOLVED_PHASE"
+_OV_PROMOTED=no   # initialised, never assumed: a stale yes from an earlier round in the same
+                  # shell would mark an unpromoted round as mixed, which is a false FAIL
 _OV_ANNOUNCE_LINE=$(sed -n "s/.*phase resolved to '\([a-z_]*\)'.*/\1/p" "$TMPERR" 2>/dev/null | tail -1)
 if [ -n "$_OV_ANNOUNCE_LINE" ]; then
   [ "$_OV_ANNOUNCE_LINE" != "$_OV_RESOLVED_PHASE" ] && echo "NOTE: the ledger moved between the pre-call probe ($_OV_RESOLVED_PHASE) and the phase the adapter announced ($_OV_ANNOUNCE_LINE). The announcement wins; effort and budget were chosen from the probe and are stated above."
@@ -946,7 +948,19 @@ if [ -n "$_OV_ANNOUNCE_LINE" ]; then
 fi
 if grep -q 'running the final_gate round now' "$TMPERR" 2>/dev/null; then
   _OV_ANNOUNCED_PHASE=final_gate
-  echo "AUTO PROMOTED: the loop reported no P1 and no P2, so the gate ran in the same invocation. The findings below are the GATE's."
+  _OV_PROMOTED=yes
+  # ⚠ THE OUTPUT BELOW IS BOTH HALVES, CONCATENATED, AND THERE IS NO MARKER TO SPLIT THEM ON.
+  # This line used to say "the findings below are the GATE's". They are not: a promotion runs
+  # two rounds in ONE invocation writing to ONE stdout, and the promotion notice goes to stderr,
+  # so nothing in the captured output marks where the loop half ends.
+  #
+  # It is worse in the DEFAULT configuration rather than in an exotic one. The adapter deletes
+  # the findings file when the backend is codex (it owns its own output format and cannot honour
+  # the block contract), so on the common openrouter-loop → codex-gate promotion the structured
+  # block is GUARANTEED absent and the grader is GUARANTEED to be reading a mixed stream. Loop
+  # findings would then be attributed to the gate.
+  echo "AUTO PROMOTED: the loop reported no P1 and no P2, so the gate ran in the same invocation."
+  echo "⚠ MIXED OUTPUT: what follows is the loop half AND the gate half concatenated, with nothing marking the boundary. Markers below cannot be attributed to one half."
 fi
 fi
 # ⚠ ANNOUNCED, NOT RAN — and the variable is named for that now, because its old name
@@ -1002,6 +1016,13 @@ elif [ "$_OV_EXIT" = "0" ]; then
   # loop round carrying [P2]s would read as a clean pass instead of "the loop continues". So the
   # phase and its bar are named explicitly, without printing a label that claims a block exists.
   echo "NO_FINDINGS_BLOCK — backend was codex, which owns its own output format; there is no JSON block to grade. Read severities from the [P1]/[P2] markers in the review output above."
+  # ⚠ ON A PROMOTED ROUND THE MARKERS COME FROM A MIXED STREAM, so grade in the direction whose
+  # error is recoverable. A loop [P1] counted as the gate's causes a spurious FAIL and costs one
+  # more round; a gate [P1] missed because it was assumed to be the loop's ships the defect. The
+  # asymmetry decides it: count every marker, attribute none, and say so.
+  if [ "${_OV_PROMOTED:-no}" = "yes" ]; then
+    echo "ATTRIBUTION: unavailable — this round promoted, so the markers above span both halves. Count them ALL: any [P1] is a FAIL for this round. A loop finding counted here costs one extra round; a gate finding discounted here ships a defect, so this errs toward FAIL deliberately. To attribute a marker to a half, re-run the gate on its own."
+  fi
   if [ "$_OV_ANNOUNCED_PHASE" = "final_gate" ]; then
     echo "BAR: gate — any [P1] is FAIL, none is PASS. This round can END the lane."
   else
