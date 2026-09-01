@@ -95,9 +95,9 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   test.each(FILES)('%s: the label derives from the announced phase, not the requested one', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
     expect(t).toContain('running the final_gate round now');
-    expect(t).toContain('_OV_RAN_PHASE');
+    expect(t).toContain('_OV_ANNOUNCED_PHASE');
     // Derived once. Two sites choosing a label independently is the r19 P1 verbatim.
-    expect(t).toMatch(/_OV_RAN_PHASE" = "final_gate" \]; then _OV_LABEL=GATE_FINDINGS_JSON/);
+    expect(t).toMatch(/_OV_ANNOUNCED_PHASE" = "final_gate" \]; then _OV_LABEL=GATE_FINDINGS_JSON/);
     expect(t).toContain('"$_OV_LABEL: ');
   });
 
@@ -171,7 +171,7 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // makes a weaker review look like a full one.
   test.each(FILES)('%s: a promoted gate round emits GATE_BACKEND too', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
-    expect(t).toMatch(/_OV_RAN_PHASE" = "final_gate" \]; then[\s\S]{0,400}?GATE_BACKEND:/);
+    expect(t).toMatch(/_OV_ANNOUNCED_PHASE" = "final_gate" \]; then[\s\S]{0,400}?GATE_BACKEND:/);
   });
 
   // ── THE BAR SURVIVES THE LABEL'S REMOVAL ─────────────────────────────────────────────────────
@@ -276,8 +276,8 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // gate marker for a round with no verdict. One condition, asserted at the only site that has it.
   test.each(FILES)('%s: the gate backend marker takes the same conjunct as the verdict', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
-    expect(t).toMatch(/if \[ "\$_OV_EXIT" = "0" \] && \[ "\$_OV_RAN_PHASE" = "final_gate" \]; then\s*\n\s*echo "GATE_BACKEND:/);
-    expect(t).not.toMatch(/if \[ "\$_OV_EXIT" != "125" \] && \[ "\$_OV_RAN_PHASE" = "final_gate" \]/);
+    expect(t).toMatch(/if \[ "\$_OV_EXIT" = "0" \] && \[ "\$_OV_ANNOUNCED_PHASE" = "final_gate" \]; then\s*\n\s*echo "GATE_BACKEND:/);
+    expect(t).not.toMatch(/if \[ "\$_OV_EXIT" != "125" \] && \[ "\$_OV_ANNOUNCED_PHASE" = "final_gate" \]/);
     expect(t).toMatch(/THE CONDITION IS `= 0`, NOT `!= 125`/);
   });
 
@@ -291,11 +291,18 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   test.each(FILES)('%s: the runnable log payload carries the announced phase', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
     const payload = t.slice(t.indexOf('gstack-review-log'), t.indexOf('gstack-review-log') + 400);
-    expect(payload).toContain('"ran_phase":"RAN_PHASE"');
+    expect(payload).toContain('"announced_phase":"ANNOUNCED_PHASE"');
     expect(payload).toContain('"exit":EXIT');
-    // both placeholders are named in the substitution note, or nobody knows what to write
-    expect(t).toMatch(/RAN_PHASE \(`\$_OV_RAN_PHASE`/);
     expect(t).toMatch(/EXIT \(the adapter's exit code, unquoted\)/);
+    // RE-DERIVED. This asserted the field takes `$_OV_ANNOUNCED_PHASE`, which is true only on the
+    // AUTO path — the inline gate and focused branches never define it and the adapter emits no
+    // announcement for an explicit phase, so following that rule wrote an empty phase on every
+    // successful non-auto review. The value is literal on those paths, not unknown. Assert the
+    // per-path table, and that empty is refused outright.
+    expect(t).toMatch(/\| the auto path \| `\$_OV_ANNOUNCED_PHASE` \|/);
+    expect(t).toMatch(/\| the inline gate path \| `final_gate`/);
+    expect(t).toMatch(/\| the focused path \| `\$_FOCUS_PHASE`/);
+    expect(t).toMatch(/`""` IS NOT A LEGAL VALUE HERE/);
   });
 
   test.each(FILES)('%s: the review log can express a round with no verdict', (_l, file) => {
@@ -306,7 +313,7 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     // and it must not be readable as a pass
     expect(t).toMatch(/`gate: "none"` is NOT a synonym for `"pass"`/);
     // what ran is recorded, so it is recoverable rather than inferred
-    expect(t).toContain('"ran_phase"');
+    expect(t).toContain('"announced_phase"');
     expect(t).toContain('"exit"');
   });
 
@@ -333,7 +340,7 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     // sat on the next line with unrelated text between, and the guard failed for a layout reason
     // while the rule was correct. Reference by content, never by position.
     expect(t).toMatch(/A GATE VERDICT EXISTS only when ALL THREE hold/);
-    expect(t).toMatch(/1\. _OV_RAN_PHASE = final_gate/);
+    expect(t).toMatch(/1\. _OV_ANNOUNCED_PHASE = final_gate/);
     expect(t).toMatch(/2\. _OV_EXIT = 0/);
     expect(t).toMatch(/3\. the round produced review output/);
     expect(t).toMatch(/ONLY outcome that ends a lane/);
@@ -343,10 +350,10 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     expect(t).toMatch(/ANY OTHER COMBINATION, INCLUDING AN ANNOUNCED final_gate THAT DID NOT FINISH/);
     expect(t).toMatch(/NO GATE VERDICT EXISTS/);
     // the announcement is the source, not the request — a promotion changes it mid-invocation
-    expect(t).toMatch(/Read `_OV_RAN_PHASE` from the adapter's stderr announcement, never from what you asked for/);
+    expect(t).toMatch(/Read `_OV_ANNOUNCED_PHASE` from the adapter's stderr announcement, never from what you asked for/);
     // persistence keys off the same fact and invents no vocabulary. \s+ not ' ' — the sentence
     // wraps, and a literal space here would make this guard a test of the FORMATTER.
-    expect(t).toMatch(/`gate` is\s+`"pass"`\/`"fail"` \*\*only\*\* when `_OV_RAN_PHASE` was `final_gate`/);
+    expect(t).toMatch(/`gate` is\s+`"pass"`\/`"fail"` \*\*only\*\* when `_OV_ANNOUNCED_PHASE` was `final_gate`/);
     // The enumeration must stay gone — but SCOPED TO THE PROSE BLOCK. A bare not.toContain here
     // forbade the skill's own working shell code: `LANE BLOCKED` is a real echo on the exit-6 path
     // and predates this branch (3 sites on the base). That the code was already right is precisely
@@ -373,11 +380,23 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // The pre-call resolve-phase happens before the round launches, so another round on the lane can
   // advance the ledger in between. Labelling from the probe would misstate the bar and suppress
   // GATE_BACKEND for the round that actually ran.
-  test.each(FILES)('%s: the phase that ran is read from the adapter announcement', (_l, file) => {
+  // RE-DERIVED for the rename, and the rename is the fix rather than cosmetics: the variable was
+  // called _OV_RAN_PHASE while holding a phase the adapter merely ANNOUNCED, from a preflight line
+  // printed before any round starts. Fourteen rounds read that name and none questioned it, until
+  // one found the output claiming PHASE_THAT_RAN for invocations that returned before running.
+  test.each(FILES)('%s: the announced phase is read from the adapter announcement', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
-    expect(t).toContain('_OV_ANNOUNCED');
-    expect(t).toContain("phase resolved to");
-    expect(t).toMatch(/_OV_ANNOUNCED" \][\s\S]{0,300}?_OV_RAN_PHASE="\$_OV_ANNOUNCED"/);
+    expect(t).toContain('_OV_ANNOUNCE_LINE');
+    expect(t).toContain('phase resolved to');
+    expect(t).toMatch(/_OV_ANNOUNCE_LINE" \][\s\S]{0,400}?_OV_ANNOUNCED_PHASE="\$_OV_ANNOUNCE_LINE"/);
+    // the output must not claim the announced phase RAN
+    expect(t).toMatch(/echo "ANNOUNCED_PHASE: \$_OV_ANNOUNCED_PHASE \(what the adapter said it was starting/);
+    expect(t).toMatch(/ANNOUNCED, NOT RAN/);
+    // Scoped to EMISSIONS. A bare not.toContain also forbids the comment that explains why the
+    // old label was wrong — the second time this exact over-reach has appeared in this file's
+    // guards, after one that forbade the skill's own `LANE BLOCKED` echo. Naming a superseded
+    // thing in order to explain it is not a regression; emitting it is.
+    expect(t).not.toMatch(/echo "PHASE_THAT_RAN/);
   });
 
   // ── STEP 4 HONOURS THE BAR ON THE NO-BLOCK PATH ──────────────────────────────────────────────
@@ -425,17 +444,17 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // loop half's output as the gate's — a round that did not finish, reported as one that did.
   test.each(FILES)('%s: a still-running round announces no phase, label or backend', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
-    expect(t).toMatch(/_OV_EXIT" = "125" \]; then[\s\S]{0,300}?PHASE_THAT_RAN: unknown/);
+    expect(t).toMatch(/_OV_EXIT" = "125" \]; then[\s\S]{0,300}?ANNOUNCED_PHASE: unknown/);
     // RE-DERIVED. This asserted the literal `!= 125` guard on GATE_BACKEND, which is the CONDITION
     // rather than the property it was protecting: a still-running round must not print a gate
     // marker. The condition tightened to `= 0` — strictly stronger, since 125 is not 0 — and this
     // guard failed anyway, because it was pinned to the text. Assert the property; the sibling
     // test asserts the exact condition once, at the site that owns it.
     // Anchor by ADJACENCY, not by slicing around the first match: three sites emit GATE_BACKEND
-    // and indexOf found the plain gate path, which has no _OV_RAN_PHASE condition at all. The
-    // _OV_RAN_PHASE conjunct is what uniquely identifies the auto site.
-    expect(t).toMatch(/\[ "\$_OV_RAN_PHASE" = "final_gate" \]; then\s*\n\s*echo "GATE_BACKEND:/);
-    expect(t).not.toMatch(/!= "125" \] && \[ "\$_OV_RAN_PHASE" = "final_gate" \]/);
+    // and indexOf found the plain gate path, which has no _OV_ANNOUNCED_PHASE condition at all. The
+    // _OV_ANNOUNCED_PHASE conjunct is what uniquely identifies the auto site.
+    expect(t).toMatch(/\[ "\$_OV_ANNOUNCED_PHASE" = "final_gate" \]; then\s*\n\s*echo "GATE_BACKEND:/);
+    expect(t).not.toMatch(/!= "125" \] && \[ "\$_OV_ANNOUNCED_PHASE" = "final_gate" \]/);
   });
 
   // ── EXIT 6 stays enumerated on this path ─────────────────────────────────────────────────────

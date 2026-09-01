@@ -920,22 +920,30 @@ fi
 # grade the loop half's output as the gate's — a round that did not finish, reported as one that
 # did, which is the whole class this file exists to close.
 if [ "$_OV_EXIT" = "125" ]; then
-  echo "PHASE_THAT_RAN: unknown — the round has NOT finished. Any promotion notice above belongs to a gate half that is still executing; re-run the poll block. Nothing here is a verdict."
+  echo "ANNOUNCED_PHASE: unknown — the round has NOT finished. Any promotion notice above belongs to a gate half that is still executing; re-run the poll block. Nothing here is a verdict."
 else
-_OV_RAN_PHASE="$_OV_RESOLVED_PHASE"
-_OV_ANNOUNCED=$(sed -n "s/.*phase resolved to '\([a-z_]*\)'.*/\1/p" "$TMPERR" 2>/dev/null | tail -1)
-if [ -n "$_OV_ANNOUNCED" ]; then
-  [ "$_OV_ANNOUNCED" != "$_OV_RESOLVED_PHASE" ] && echo "NOTE: the ledger moved between the pre-call probe ($_OV_RESOLVED_PHASE) and the round the adapter actually started ($_OV_ANNOUNCED). The announcement wins; effort and budget were chosen from the probe and are stated above."
-  _OV_RAN_PHASE="$_OV_ANNOUNCED"
+_OV_ANNOUNCED_PHASE="$_OV_RESOLVED_PHASE"
+_OV_ANNOUNCE_LINE=$(sed -n "s/.*phase resolved to '\([a-z_]*\)'.*/\1/p" "$TMPERR" 2>/dev/null | tail -1)
+if [ -n "$_OV_ANNOUNCE_LINE" ]; then
+  [ "$_OV_ANNOUNCE_LINE" != "$_OV_RESOLVED_PHASE" ] && echo "NOTE: the ledger moved between the pre-call probe ($_OV_RESOLVED_PHASE) and the phase the adapter announced ($_OV_ANNOUNCE_LINE). The announcement wins; effort and budget were chosen from the probe and are stated above."
+  _OV_ANNOUNCED_PHASE="$_OV_ANNOUNCE_LINE"
 fi
 if grep -q 'running the final_gate round now' "$TMPERR" 2>/dev/null; then
-  _OV_RAN_PHASE=final_gate
+  _OV_ANNOUNCED_PHASE=final_gate
   echo "AUTO PROMOTED: the loop reported no P1 and no P2, so the gate ran in the same invocation. The findings below are the GATE's."
 fi
 fi
-[ "$_OV_EXIT" = "125" ] || echo "PHASE_THAT_RAN: $_OV_RAN_PHASE"
+# ⚠ ANNOUNCED, NOT RAN — and the variable is named for that now, because its old name
+# (`_OV_RAN_PHASE`) is what made this easy to miss for fourteen rounds. The adapter prints
+# `phase resolved to '<x>'` from its PREFLIGHT, before any round starts, so an invocation that
+# returns from the preflight — a blocked gate, a refused lane — has announced a phase it never
+# ran. Printing that as PHASE_THAT_RAN reports a round that did not happen, on exactly the
+# refused paths this step exists to keep honest. Print the announcement AS an announcement and
+# let the exit code say whether it finished; do not enumerate which exits mean "never started",
+# because that is the adapter's vocabulary and it drifts.
+[ "$_OV_EXIT" = "125" ] || echo "ANNOUNCED_PHASE: $_OV_ANNOUNCED_PHASE (what the adapter said it was starting; on a non-zero exit it may never have run)"
 # One producer, two labels. `_OV_LABEL` is derived here and nowhere else.
-if [ "$_OV_RAN_PHASE" = "final_gate" ]; then _OV_LABEL=GATE_FINDINGS_JSON; else _OV_LABEL=OV_FINDINGS_JSON; fi
+if [ "$_OV_ANNOUNCED_PHASE" = "final_gate" ]; then _OV_LABEL=GATE_FINDINGS_JSON; else _OV_LABEL=OV_FINDINGS_JSON; fi
 # THE COMPANION MARKER TRAVELS WITH THE LABEL. Step 4 keys DEGRADED-GATE reporting off
 # `GATE_BACKEND:` — a gate that ran on a hosted backend is diff-scoped, so defects in files this
 # branch did not touch were never discoverable, and it must be reported as PASS (degraded gate)
@@ -945,13 +953,13 @@ if [ "$_OV_RAN_PHASE" = "final_gate" ]; then _OV_LABEL=GATE_FINDINGS_JSON; else 
 #
 # ⚠ THE CONDITION IS `= 0`, NOT `!= 125`. Found by sweeping this fact across its sites rather
 # than by a round: every other consumer of a verdict here requires exit 0, and this one alone
-# admitted every failing exit. `_OV_RAN_PHASE` comes from an announcement emitted BEFORE the
+# admitted every failing exit. `_OV_ANNOUNCED_PHASE` comes from an announcement emitted BEFORE the
 # round runs, so a gate that announced itself and then died at 3/4/5/6 printed `GATE_BACKEND:`
 # — a gate marker for a round that produced no verdict, which is the same half-a-contract shape
 # the comment above describes, with the halves swapped. The failure line below still says the
 # round failed, so this was never a silent false clean; it was one marker disagreeing with every
 # other signal in the same output, which is how a reader ends up trusting the wrong one.
-if [ "$_OV_EXIT" = "0" ] && [ "$_OV_RAN_PHASE" = "final_gate" ]; then
+if [ "$_OV_EXIT" = "0" ] && [ "$_OV_ANNOUNCED_PHASE" = "final_gate" ]; then
   echo "GATE_BACKEND: $(~/.claude/skills/gstack/bin/gstack-outside-voice backend --phase final_gate 2>/dev/null || echo unknown)"
 fi
 if [ "$_OV_EXIT" = "0" ] && [ -s "$_OV_FINDINGS" ]; then
@@ -959,7 +967,7 @@ if [ "$_OV_EXIT" = "0" ] && [ -s "$_OV_FINDINGS" ]; then
   echo "Severity counts come from this block; the file:line detail is in the review output above."
   # THE SEVERITY BAR FOLLOWS THE SAME PRODUCER. Stated here rather than left for step 4 to infer,
   # because under `auto` a reader cannot tell from the invocation which bar applies.
-  if [ "$_OV_RAN_PHASE" = "final_gate" ]; then
+  if [ "$_OV_ANNOUNCED_PHASE" = "final_gate" ]; then
     echo "BAR: gate — p1 > 0 is FAIL, p1 == 0 is PASS. This round can END the lane."
   else
     echo "BAR: loop — p1 > 0 OR p2 > 0 means the loop CONTINUES. A clean loop round is NOT convergence; only the gate declares that."
@@ -978,7 +986,7 @@ elif [ "$_OV_EXIT" = "0" ]; then
   # loop round carrying [P2]s would read as a clean pass instead of "the loop continues". So the
   # phase and its bar are named explicitly, without printing a label that claims a block exists.
   echo "NO_FINDINGS_BLOCK — backend was codex, which owns its own output format; there is no JSON block to grade. Read severities from the [P1]/[P2] markers in the review output above."
-  if [ "$_OV_RAN_PHASE" = "final_gate" ]; then
+  if [ "$_OV_ANNOUNCED_PHASE" = "final_gate" ]; then
     echo "BAR: gate — any [P1] is FAIL, none is PASS. This round can END the lane."
   else
     echo "BAR: loop — any [P1] OR [P2] means the loop CONTINUES. A clean loop round is NOT convergence; only the gate declares that."
@@ -1345,7 +1353,7 @@ notice when that table changes — so it is gone, and one invariant stands in it
 
 ```
 A GATE VERDICT EXISTS only when ALL THREE hold:
-  1. _OV_RAN_PHASE = final_gate      (the adapter announced it ran the gate)
+  1. _OV_ANNOUNCED_PHASE = final_gate  (the adapter announced it was starting the gate)
   2. _OV_EXIT = 0                    (and it finished)
   3. the round produced review output  (and it had something to say)
 
@@ -1368,12 +1376,12 @@ whole step exists to prevent, reintroduced by the fix for it. **Announcing a rou
 one**, the same way asking for a phase is not getting it. Require the announcement, a zero exit,
 and output to report on.
 
-**Read `_OV_RAN_PHASE` from the adapter's stderr announcement, never from what you asked for** —
+**Read `_OV_ANNOUNCED_PHASE` from the adapter's stderr announcement, never from what you asked for** —
 the request is `auto`, the announcement is what auto RESOLVED to, and a promotion changes it
 mid-invocation. Asking-is-not-getting is the whole reason this variable exists.
 
 **The persistence line below records the same three observed facts and invents nothing.** `gate` is
-`"pass"`/`"fail"` **only** when `_OV_RAN_PHASE` was `final_gate`; otherwise it is `"none"`, and the
+`"pass"`/`"fail"` **only** when `_OV_ANNOUNCED_PHASE` was `final_gate`; otherwise it is `"none"`, and the
 announced phase and the adapter's exit code are recorded beside it as their own fields. A session
 reading the log later can then see exactly what ran and what it returned, without this file having
 promised in advance what any particular code means. Writing `"pass"` for a round no gate finished
@@ -1425,11 +1433,23 @@ CROSS-MODEL ANALYSIS:
 
 7. Persist the review result:
 ```bash
-~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"codex-review","timestamp":"TIMESTAMP","status":"STATUS","gate":"GATE","ran_phase":"RAN_PHASE","exit":EXIT,"findings":N,"findings_fixed":N,"commit":"'"$(git rev-parse --short HEAD)"'"}'
+~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"codex-review","timestamp":"TIMESTAMP","status":"STATUS","gate":"GATE","announced_phase":"ANNOUNCED_PHASE","exit":EXIT,"findings":N,"findings_fixed":N,"commit":"'"$(git rev-parse --short HEAD)"'"}'
 ```
 
-Substitute: TIMESTAMP (ISO 8601), RAN_PHASE (`$_OV_RAN_PHASE`, or empty if the adapter announced
-nothing), EXIT (the adapter's exit code, unquoted), findings (from WHICHEVER structured block the round
+Substitute: TIMESTAMP (ISO 8601), EXIT (the adapter's exit code, unquoted), ANNOUNCED_PHASE — which
+takes a value on EVERY path, because a row that cannot say whether it came from a cheap loop round
+or a real gate is the one thing this field was added to prevent:
+
+| the path that ran | `announced_phase` |
+|---|---|
+| the auto path | `$_OV_ANNOUNCED_PHASE` |
+| the inline gate path | `final_gate` — literal there, and the adapter emits no announcement for an explicit phase |
+| the focused path | `$_FOCUS_PHASE` — likewise literal |
+
+⚠ **`""` IS NOT A LEGAL VALUE HERE.** Only the auto path has an announcement to read, so a rule
+written as "empty if the adapter announced nothing" records an empty phase for every SUCCESSFUL
+non-auto review — the common case — and the field silently means nothing on most rows. On those
+paths the phase is not unknown, it is *literal*: take it from the branch. Then findings (from WHICHEVER structured block the round
 printed — `GATE_FINDINGS_JSON` on a gate round, `OV_FINDINGS_JSON` on a loop round, since an
 `auto` review that stops on the loop half emits the latter and naming only the former writes a
 loop round to the log with no count or the wrong one — else the count of [P1] + [P2] markers), findings_fixed (count of findings that were
@@ -1449,7 +1469,7 @@ not thereby a passing round:
 this log can be trusted.** Without it a caller has no truthful value to write, and the reflex is to
 reach for `clean`/`pass` because the round produced no failures — recording a lane the gate never
 spoke on as converged, which is the exact claim a later session reads back. Add
-`ran_phase` and `exit` — already in the payload above — carry what actually ran, so it is
+`announced_phase` and `exit` — already in the payload above — carry what actually ran, so it is
 recoverable from the log rather than inferred from a verdict that was never issued. Fill them in on
 EVERY row, not only no-verdict ones: a field present only when something went wrong is a field
 nobody can tell apart from a field nobody filled in. (`gstack-review-log` validates only that the payload parses as JSON — verified by reading
