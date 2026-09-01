@@ -1919,12 +1919,21 @@ echo "REVIEW_EFFORT: $_REVIEW_EFFORT"   # printed so an unapplied --xhigh is vis
 # same reason this file records there: a silent default makes "the user did not type --loop" and
 # "the agent forgot to substitute" produce identical output, which is how that path stayed
 # unreachable for four rounds. One convention, not two.
-# SET THIS LINE from the mode Step 0.3 ALREADY RESOLVED: `loop` if the user typed --loop,
-# otherwise `final_gate`. Do not re-derive it from the instructions.
-_FOCUS_PHASE="<<SET-ME: loop | final_gate>>"   # ← SUBSTITUTE THIS WHOLE STRING
+# SET THIS LINE from the mode Step 0.3 ALREADY RESOLVED, using the SAME rule as `_OV_PHASE`:
+# `loop` if the user typed --loop; otherwise `auto` in a claude-fleet-config worktree and
+# `final_gate` anywhere else. Do not re-derive it from the instructions.
+#
+# ⚠ THIS LINE IS A FOCUSED REVIEW, AND FOCUS IS NOT AN AXIS OF THE PHASE RULE. It accepted only
+# `loop|final_gate`, which meant `/codex review <focus>` in the rollout repo could never enter the
+# auto lane no matter what Step 0.4 resolved — a focused review there bypassed loop-then-gate
+# entirely, and disagreed with 0.4's readiness probe about whether Codex was even required. That
+# is the THIRD site stating this one rule; 0.4's comment and its STOP message are the other two,
+# and a fix that reaches only some of them leaves the rule saying different things in different
+# places. If you change the rule, change all three.
+_FOCUS_PHASE="<<SET-ME: loop | final_gate | auto>>"   # ← SUBSTITUTE THIS WHOLE STRING
 case "$_FOCUS_PHASE" in
-  loop|final_gate) ;;
-  *) echo "STOP: _FOCUS_PHASE was not substituted (still '$_FOCUS_PHASE'). Step 0.3 resolved the mode already — carry it here: 'loop' when the user typed --loop, otherwise 'final_gate'." >&2; return 2 2>/dev/null || exit 2 ;;
+  loop|final_gate|auto) ;;
+  *) echo "STOP: _FOCUS_PHASE was not substituted (still '$_FOCUS_PHASE'). Step 0.3 resolved the mode already — carry it here, same rule as _OV_PHASE: 'loop' when the user typed --loop; otherwise 'auto' in a claude-fleet-config worktree and 'final_gate' anywhere else. Focus is not an axis." >&2; return 2 2>/dev/null || exit 2 ;;
 esac
 echo "FOCUS_PHASE: $_FOCUS_PHASE"   # printed so an unapplied --loop is visible, not inferred
 # THE BUDGET FOLLOWS THE PHASE (codex r20 P2, self-inflicted by r18). r18 routed this branch to
@@ -2123,17 +2132,29 @@ the defect. It is a claim about someone else's exit-code table, restated in a fi
 notice when that table changes — so it is gone, and one invariant stands in its place:
 
 ```
-_OV_RAN_PHASE = final_gate   →  the gate ran in THIS invocation and spoke.
-                                GATE: PASS | GATE: FAIL (N critical). This is the ONLY
-                                outcome that ends a lane.
+A GATE VERDICT EXISTS only when ALL THREE hold:
+  1. _OV_RAN_PHASE = final_gate      (the adapter announced it ran the gate)
+  2. _OV_EXIT = 0                    (and it finished)
+  3. the round produced review output  (and it had something to say)
 
-_OV_RAN_PHASE = anything else,  →  NO GATE VERDICT EXISTS, whatever the findings say.
-or empty                           Report the phase that actually ran, the adapter's exit
-                                   code, and its own message VERBATIM. Do not translate
-                                   that exit code into a state name of your own — you do
-                                   not own the vocabulary and it drifts under you.
-                                   The lane has NOT converged.
+  → GATE: PASS | GATE: FAIL (N critical). This is the ONLY outcome that ends a lane.
+
+ANY OTHER COMBINATION, INCLUDING AN ANNOUNCED final_gate THAT DID NOT FINISH:
+  → NO GATE VERDICT EXISTS, whatever the findings say and whatever phase was announced.
+    Report the phase that ran, the adapter's exit code, and its own message VERBATIM. Do
+    not translate that exit code into a state name of your own — you do not own the
+    vocabulary and it drifts under you. The lane has NOT converged.
 ```
+
+⚠ **BOTH CONDITIONS, AND THE SECOND IS THE ONE THAT WAS MISSING.** An earlier draft keyed on the
+announced phase alone. The announcement says the adapter STARTED the gate — it is emitted before
+the round runs — so an auto invocation can announce `final_gate` and then exit 2/3/4/5 with no
+verdict at all: the ledger says the gate is owed, the gate backend turns out to be disabled or
+unauthenticated, and the round dies. Keying on the announcement alone turns that into a clean
+`GATE: PASS`, which is a round that never ran reported as a converged lane — the exact failure this
+whole step exists to prevent, reintroduced by the fix for it. **Announcing a round is not finishing
+one**, the same way asking for a phase is not getting it. Require the announcement, a zero exit,
+and output to report on.
 
 **Read `_OV_RAN_PHASE` from the adapter's stderr announcement, never from what you asked for** —
 the request is `auto`, the announcement is what auto RESOLVED to, and a promotion changes it
@@ -2162,12 +2183,18 @@ Examples (the strongest reasons compare against an alternative — another findi
 
 The reason must engage with a specific finding (or compare against alternatives — other findings, fix-vs-ship, fix order). Boilerplate reasons ("because it's better", "because adversarial review found things") fail the format. The recommendation is the ONE line a user reads when they don't have time for the verbatim output. **Never silently auto-decide; always emit the line.**
 
-⚠ **WHEN NO GATE VERDICT EXISTS, THE LINE IS STILL REQUIRED — AND ITS ACTION IS NEVER SHIP OR FIX.**
-The examples above all assume a completed review with findings to weigh, which a loop-only,
-unfinished or blocked round does not have. Following them literally there would manufacture a
-ship/fix recommendation to satisfy the format, misstating a review that never completed — the format
-would be satisfied and the sentence would be false. Recommend the action the round's actual state
-calls for, and name that state as the reason:
+⚠ **WHEN NO GATE VERDICT EXISTS, THE LINE IS STILL REQUIRED — AND IT MUST NOT IMPLY THE LANE IS
+CONVERGED.** The examples above all weigh findings against each other to reach a ship-or-hold call,
+which a loop-only, unfinished or blocked round has no basis for. Following them literally there
+manufactures a completed-review recommendation to satisfy the format: the format passes and the
+sentence is false.
+
+The constraint is about what the action CLAIMS, not which verb it uses — an earlier wording banned
+"Fix" outright and then opened with `Recommendation: Fix the two P2s…`, which is both a
+contradiction and wrong, because fixing loop findings and re-running is exactly right on a
+loop-continue round. **`Ship` is never available without a verdict; a `Fix` is available only when
+it is paired with running another round, never with shipping.** Recommend what the round's actual
+state calls for, and name that state as the reason:
 
 - `Recommendation: Fix the two P2s and run /codex review again because the cheap round found work, so no gate has run on this lane yet and nothing about convergence has been established.`
 - `Recommendation: Re-run the poll block because the adapter has not returned yet — no verdict exists, and reporting the loop's findings as the round's outcome would present an unfinished invocation as a completed one.`

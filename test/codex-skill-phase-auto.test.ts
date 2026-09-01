@@ -224,6 +224,21 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // on the REPO alone — so a focused review in the rollout repo would be handed final_gate while
   // the route resolved auto. Both sites must carry the same rule, or the second is a rival
   // authority; the guard asserts BOTH, because fixing one is how they drifted in the first place.
+  // Round 12 found a THIRD site stating the phase rule: the focused-review launcher's
+  // _FOCUS_PHASE, which accepted only loop|final_gate — so a focused review in the rollout repo
+  // could never enter the auto lane whatever Step 0.4 resolved. r11 fixed two authorities and
+  // there were three. The guard now asserts every site that constrains a phase value.
+  test.each(FILES)('%s: the focused-review launcher admits auto too', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toContain('_FOCUS_PHASE="<<SET-ME: loop | final_gate | auto>>"');
+    expect(t).toMatch(/^\s*loop\|final_gate\|auto\) ;;/m);
+    // the STOP message is the fourth statement of the rule and must agree with the other three
+    expect(t).toMatch(/STOP: _FOCUS_PHASE was not substituted[\s\S]{0,400}?Focus is not an axis/);
+    expect(t).toMatch(/THIS LINE IS A FOCUSED REVIEW, AND FOCUS IS NOT AN AXIS OF THE PHASE RULE/);
+    // and the superseded two-value form must be gone
+    expect(t).not.toContain('_FOCUS_PHASE="<<SET-ME: loop | final_gate>>"');
+  });
+
   test.each(FILES)('%s: instructions are not an axis of the phase rule, at either site', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
     // Assert the RULE LINE, not only the paragraph explaining it. A mutation probe reverted the
@@ -269,17 +284,35 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   test.each(FILES)('%s: the recommendation line survives a round with no verdict', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
     expect(t).toMatch(/WHEN NO GATE VERDICT EXISTS, THE LINE IS STILL REQUIRED/);
-    // the failure mode is a manufactured ship/fix line, so the ban is explicit
-    expect(t).toMatch(/ITS ACTION IS NEVER SHIP OR FIX/);
+    // RE-DERIVED: this asserted "ITS ACTION IS NEVER SHIP OR FIX", which was over-broad and
+    // self-contradicting — the block's own first example opens with "Fix the two P2s and run
+    // /codex review again", which is exactly right on a loop-continue round. The constraint is
+    // about what the action CLAIMS, not which verb it uses.
+    expect(t).toMatch(/MUST NOT IMPLY THE LANE IS\s+CONVERGED/);
+    expect(t).toMatch(/`Ship` is never available without a verdict; a `Fix` is available only when\s+it is paired with running another round, never with shipping/);
     // step 5a must not promise a verdict it may not have
     expect(t).not.toMatch(/After presenting Codex's verbatim\s+output and the GATE verdict/);
   });
 
   test.each(FILES)('%s: only an announced final_gate phase may end a lane', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
-    // the invariant, wired to the producer rather than to a helper's existence
-    expect(t).toMatch(/_OV_RAN_PHASE = final_gate[\s\S]{0,220}?ONLY[\s\S]{0,40}?outcome that ends a lane/);
-    expect(t).toMatch(/anything else[\s\S]{0,200}?NO GATE VERDICT EXISTS/);
+    // The invariant takes THREE conjuncts, and this guard once asserted only the first — it kept
+    // passing when the announcement-alone version was live, which is a guard going weak silently.
+    // Each conjunct is asserted separately so dropping any one of them fails here.
+    // Anchored to the numbered conjuncts, not to column positions. The previous version matched
+    // across a two-column ASCII block, so it was partly a test of the alignment: "review output"
+    // sat on the next line with unrelated text between, and the guard failed for a layout reason
+    // while the rule was correct. Reference by content, never by position.
+    expect(t).toMatch(/A GATE VERDICT EXISTS only when ALL THREE hold/);
+    expect(t).toMatch(/1\. _OV_RAN_PHASE = final_gate/);
+    expect(t).toMatch(/2\. _OV_EXIT = 0/);
+    expect(t).toMatch(/3\. the round produced review output/);
+    expect(t).toMatch(/ONLY outcome that ends a lane/);
+    expect(t).toMatch(/BOTH CONDITIONS, AND THE SECOND IS THE ONE THAT WAS MISSING/);
+    // announcing is not finishing — the reason the second conjunct exists
+    expect(t).toMatch(/Announcing a round is not finishing\s+one/);
+    expect(t).toMatch(/ANY OTHER COMBINATION, INCLUDING AN ANNOUNCED final_gate THAT DID NOT FINISH/);
+    expect(t).toMatch(/NO GATE VERDICT EXISTS/);
     // the announcement is the source, not the request — a promotion changes it mid-invocation
     expect(t).toMatch(/Read `_OV_RAN_PHASE` from the adapter's stderr announcement, never from what you asked for/);
     // persistence keys off the same fact and invents no vocabulary. \s+ not ' ' — the sentence
