@@ -1049,11 +1049,16 @@ esac
 # So resolve it to a real phase FIRST, and keep the resolved value: every follower below reads it.
 _OV_RESOLVED_PHASE="$_OV_PHASE"
 if [ "$_OV_PHASE" = "auto" ]; then
-  # THE SAME QUESTION THE EXEC WILL ASK. resolve-phase defaults to the repository's own default
-  # branch and to non-explicit mode; the review below runs
+  # THE SAME QUESTION THE EXEC WILL ASK. resolve-phase applies the adapter's OWN default base —
+  # a fixed literal in the adapter, not this repository's default branch and not your branch's
+  # base — and non-explicit mode; the review below runs
   # `exec --phase auto --explicit --base origin/<base>`.
+  # (An earlier wording said "the repository's own default branch". That was written to satisfy a
+  # guard against hardcoded branch names and it made the sentence FALSE, which is worse than the
+  # literal it removed: the adapter hardcodes one ref, so on any repo whose base differs, the
+  # default is wrong in a way the old wording described accurately and the new one did not.)
   # Omitting either flag lets this resolution disagree with the phase the adapter actually picks —
-  # on any branch whose base is not the default one, or when codex_reviews=disabled and the user asked for a
+  # on any branch whose base differs from that literal, or when codex_reviews=disabled and the user asked for a
   # review explicitly. The two would then diverge silently, and Step 0.4 would probe the wrong
   # backend: skipping the binary and auth checks a real gate round needs, or refusing a hosted
   # loop that was allowed. Two producers that answer differently is the defect this whole change
@@ -1772,7 +1777,14 @@ if [ "$_OV_EXIT" = "125" ]; then
   # still-running cheap loop indistinguishable from an undecided auto round. Neither is a
   # verdict either way; that is the sentence below, and it holds for both.
   if [ "$_OV_PHASE" = "auto" ]; then _OV_ANNOUNCED_PHASE=unknown; else _OV_ANNOUNCED_PHASE="$_OV_PHASE"; fi
-  echo "ANNOUNCED_PHASE: $_OV_ANNOUNCED_PHASE — the round has NOT finished. Any promotion notice above belongs to a gate half that is still executing; re-run the poll block. Nothing here is a verdict."
+  # The promotion clause is conditional for the same reason the phase is: an explicit lane never
+  # promotes, so telling its user a gate half may be executing suggests it is already spending a
+  # gate round in the background — the exact thing the explicit contract promises it will not do.
+  if [ "$_OV_PHASE" = "auto" ]; then
+    echo "ANNOUNCED_PHASE: $_OV_ANNOUNCED_PHASE — the round has NOT finished. Any promotion notice above belongs to a gate half that is still executing; re-run the poll block. Nothing here is a verdict."
+  else
+    echo "ANNOUNCED_PHASE: $_OV_ANNOUNCED_PHASE — the round has NOT finished. This lane does not promote, so no gate half is running; re-run the poll block. Nothing here is a verdict."
+  fi
 else
 _OV_ANNOUNCED_PHASE="$_OV_RESOLVED_PHASE"
 _OV_PROMOTED=no   # initialised, never assumed: a stale yes from an earlier round in the same
@@ -2328,7 +2340,10 @@ written for the paths that work is a rule with no answer for the paths that do n
 | **inline gate, gate NEVER INVOKED** (`_GATE_MODE != ready`) | **`none`** | **`null`** |
 | the focused path | `$_FOCUS_PHASE` — likewise literal | `$_CODEX_EXIT` |
 
-⚠ **THE FIFTH ROW IS THE ONE THAT LOOKS LIKE IT DOES NOT NEED TO EXIST.** When the gate probe
+⚠ **THE `gate NEVER INVOKED` ROW IS THE ONE THAT LOOKS LIKE IT DOES NOT NEED TO EXIST.** (It said
+"the fifth row" until rows were inserted above it and the pointer went stale — reference by
+CONTENT, never by position, which is this file's own rule and was broken in the paragraph
+enforcing it.) When the gate probe
 comes back anything but `ready` — disabled, misconfigured, unauthenticated — the branch stops
 BEFORE `gstack-outside-voice exec` runs, so there is no announcement and no exit code. Writing
 `final_gate` there fabricates a gate round that never started, and writing "the adapter's exit

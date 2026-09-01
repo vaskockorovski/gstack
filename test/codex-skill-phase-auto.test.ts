@@ -316,7 +316,10 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     expect(t).toMatch(/\| inline gate, gate ran \| `final_gate`/);
     expect(t).toMatch(/gate NEVER INVOKED\*\* \(`_GATE_MODE != ready`\) \| \*\*`none`\*\* \| \*\*`null`\*\* \|/);
     expect(t).toMatch(/\| the focused path \| `\$_FOCUS_PHASE`/);
-    expect(t).toMatch(/THE FIFTH ROW IS THE ONE THAT LOOKS LIKE IT DOES NOT NEED TO EXIST/);
+    // Was THE FIFTH ROW; rows were inserted above it and the pointer went stale. The guard now
+    // asserts the content-addressed form, and that no positional pointer comes back.
+    expect(t).toMatch(/THE `gate NEVER INVOKED` ROW IS THE ONE THAT LOOKS LIKE IT DOES NOT NEED TO EXIST/);
+    expect(t).not.toMatch(/THE FIFTH ROW IS THE ONE/);
     expect(t).toMatch(/`""` IS NOT A LEGAL VALUE IN THE PHASE COLUMN/);
   });
 
@@ -532,7 +535,13 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     // By ADJACENCY to the assignment it follows, not by a character window from the branch head:
     // several sites test exit 125, so the window was anchored to whichever came first. Third
     // positional guard in this file to break this way — content, never position.
-    expect(t).toMatch(/_OV_ANNOUNCED_PHASE="\$_OV_PHASE"; fi\s*\n\s*echo "ANNOUNCED_PHASE: \$_OV_ANNOUNCED_PHASE — the round has NOT finished/);
+    // The message is conditional now for the same reason the phase is: an explicit lane never
+    // promotes, so naming a gate half there suggests it is already spending a round in the
+    // background. Assert BOTH arms — a guard that checks only one arm of a branch is how the
+    // accepting arm of a case statement went missing earlier in this same file.
+    expect(t).toMatch(/belongs to a gate half that is still executing/);
+    expect(t).toMatch(/This lane does not promote, so no gate half is running/);
+    expect(t).toMatch(/_OV_ANNOUNCED_PHASE="\$_OV_PHASE"; fi\s*\n[\s\S]{0,400}?if \[ "\$_OV_PHASE" = "auto" \]; then\s*\n\s*echo "ANNOUNCED_PHASE: \$_OV_ANNOUNCED_PHASE — the round has NOT finished/);
     // RE-DERIVED. This asserted the literal `!= 125` guard on GATE_BACKEND, which is the CONDITION
     // rather than the property it was protecting: a still-running round must not print a gate
     // marker. The condition tightened to `= 0` — strictly stronger, since 125 is not 0 — and this
