@@ -1195,17 +1195,37 @@ _REVIEW_ROUTE=gate
 # is nothing to promote — the lane has converged and the gate is owed — so the existing inline
 # gate path is exactly the right thing to run, and it is already repo-scoped, already
 # --codex-mode review, already 330s. `auto` is only interesting when a loop round is going to run.
-# ONE CONDITION: the repo opts in. An earlier revision also required the resolved phase to be
+# TWO CONDITIONS: the repo opts in, AND the user did not type --loop.
+#
+# ⚠ THE SECOND IS NOT THE ONE A ROUND ALREADY REMOVED — check which before deleting it. The
+# condition that was removed keyed on the RESOLVED PHASE (ledger state), and it made whether a
+# review demanded a sweep depend on a value nobody could predict. This one keys on what the USER
+# TYPED, which is neither ambiguous nor mutable, and it exists because the explicit --loop path
+# and the auto path share this launcher. Without it, `/codex review --loop` in the rollout repo
+# resolves `auto` and the instruction below sends it through with `_OV_PHASE=auto` — so a lane
+# the user asked to keep cheap can promote, spend a gate round, and present convergence that was
+# never requested. An explicit --loop is a single cheap round that must never promote; that is
+# the contract stated above, and the route must not quietly override it.
+#
+# _USER_TYPED_LOOP is resolved by Step 0.3 alongside the mode. Substitute it there, as with
+# every other value this file takes from the mode: yes when the invocation carried --loop.
+_USER_TYPED_LOOP="<<SET-ME: yes | no>>"   # ← SUBSTITUTE THIS WHOLE STRING
+case "$_USER_TYPED_LOOP" in
+  yes|no) ;;
+  *) echo "STOP: _USER_TYPED_LOOP was not substituted (still '$_USER_TYPED_LOOP'). Step 0.3 has already resolved the mode; carry it here — 'yes' if the invocation carried --loop, otherwise 'no'. Guessing is not available: guess 'no' and an explicit --loop can promote to a gate the user did not ask for." >&2; return 2 2>/dev/null || exit 2 ;;
+esac
+# An earlier revision also required the resolved phase to be
 # `loop`, because the loop launcher then ran a gate round DIFF-scoped. Passing --codex-mode review
 # removed that reason, and the extra condition had a cost of its own: a straight-to-gate review
 # fell through to `exec --phase final_gate`, which skips the adapter's auto_resolved branch in
 # preflight_gate() — so round 1 could bypass the structural-sweep refusal and be presented as an
 # ordinary gate verdict instead of ROUND NOT RUN. Whether a plain review in this repo demanded a
 # sweep then depended on ledger state, which is not a rule anyone could follow.
-if [ "${_REVIEW_REPO:-}" = "${_REVIEW_AUTO_REPO:-}" ] && [ -n "${_REVIEW_REPO:-}" ]; then
+if [ "${_REVIEW_REPO:-}" = "${_REVIEW_AUTO_REPO:-}" ] && [ -n "${_REVIEW_REPO:-}" ] \
+   && [ "$_USER_TYPED_LOOP" = "no" ]; then
   _REVIEW_ROUTE=auto
 fi
-echo "REVIEW_ROUTE: $_REVIEW_ROUTE   (repo=${_REVIEW_REPO:-unknown} resolved=${_OV_RESOLVED_PHASE:-unknown})"
+echo "REVIEW_ROUTE: $_REVIEW_ROUTE   (repo=${_REVIEW_REPO:-unknown} resolved=${_OV_RESOLVED_PHASE:-unknown} user_typed_loop=$_USER_TYPED_LOOP)"
 ```
 
 **If `REVIEW_ROUTE: auto`, skip to the loop path below and run it with `_OV_PHASE=auto`.** It
@@ -1744,8 +1764,14 @@ if [ "$_OV_EXIT" = "125" ]; then
   # `unknown` without ever setting the variable — so the one case where the round is still
   # running was also the one case the log rule could not be followed, forcing an empty field or
   # an invented value on exactly the unfinished round the field exists to mark.
-  _OV_ANNOUNCED_PHASE=unknown
-  echo "ANNOUNCED_PHASE: unknown — the round has NOT finished. Any promotion notice above belongs to a gate half that is still executing; re-run the poll block. Nothing here is a verdict."
+  # ⚠ `unknown` ONLY WHERE THE PHASE COULD STILL CHANGE. Under `auto` an unfinished round may be
+  # a loop half about to promote, so the phase genuinely is not yet decided. Under an explicit
+  # `loop` or `final_gate` it is LITERAL and cannot change — that lane never promotes — so
+  # collapsing it to `unknown` throws away a fact the invocation already knows, and makes a
+  # still-running cheap loop indistinguishable from an undecided auto round. Neither is a
+  # verdict either way; that is the sentence below, and it holds for both.
+  if [ "$_OV_PHASE" = "auto" ]; then _OV_ANNOUNCED_PHASE=unknown; else _OV_ANNOUNCED_PHASE="$_OV_PHASE"; fi
+  echo "ANNOUNCED_PHASE: $_OV_ANNOUNCED_PHASE — the round has NOT finished. Any promotion notice above belongs to a gate half that is still executing; re-run the poll block. Nothing here is a verdict."
 else
 _OV_ANNOUNCED_PHASE="$_OV_RESOLVED_PHASE"
 _OV_PROMOTED=no   # initialised, never assumed: a stale yes from an earlier round in the same
@@ -2294,7 +2320,9 @@ written for the paths that work is a rule with no answer for the paths that do n
 |---|---|---|
 | auto, round finished | `$_OV_ANNOUNCED_PHASE` | `$_OV_EXIT` |
 | auto, round failed | `$_OV_ANNOUNCED_PHASE` | `$_OV_EXIT` |
-| auto, still running (125) | `unknown` — the branch assigns it | `125` |
+| auto, still running (125) | `unknown` — the phase is genuinely undecided until it promotes or does not | `125` |
+| **explicit `review --loop`, finished** | **`loop`** — literal; this lane never promotes | `$_OV_EXIT` |
+| **explicit `review --loop`, still running (125)** | **`loop`** — still literal | `125` |
 | inline gate, gate ran | `final_gate` — literal, and the adapter emits no announcement for an explicit phase | `$_CODEX_EXIT` |
 | **inline gate, gate NEVER INVOKED** (`_GATE_MODE != ready`) | **`none`** | **`null`** |
 | the focused path | `$_FOCUS_PHASE` — likewise literal | `$_CODEX_EXIT` |

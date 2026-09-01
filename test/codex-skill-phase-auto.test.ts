@@ -327,6 +327,35 @@ describe('VAS-2402: --phase auto and the five followers', () => {
   // the DEFAULT config than an exotic one: the adapter deletes the findings file for a codex
   // backend, so the common openrouter-loop → codex-gate promotion is guaranteed to have no
   // structured block and to grade from a mixed stream.
+  // The explicit --loop path and the auto path SHARE the loop launcher. Without a second
+  // condition on the route, `/codex review --loop` in the rollout repo resolves auto and gets sent
+  // through with _OV_PHASE=auto — so a lane the user asked to keep cheap can promote and present
+  // a convergence nobody requested. The condition keys on what the USER TYPED, which is not the
+  // ledger-state condition an earlier round removed for being unpredictable.
+  test.each(FILES)('%s: an explicit --loop is never routed into the auto lane', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/&& \[ "\$_USER_TYPED_LOOP" = "no" \]; then\s*\n\s*_REVIEW_ROUTE=auto/);
+    expect(t).toContain('_USER_TYPED_LOOP="<<SET-ME: yes | no>>"');
+    // The ACCEPTING arm, not only the rejecting one. A probe deleted `yes|no) ;;` and every guard
+    // stayed green while the case fell through to `*)` for every value — so a correctly
+    // substituted invocation would STOP. Asserting only the STOP message tests half a case
+    // statement, which is the shape that always passes and sometimes blocks everything.
+    expect(t).toMatch(/^\s*yes\|no\) ;;\s*$/m);
+    // self-validating, like every other substituted value in this file
+    expect(t).toMatch(/STOP: _USER_TYPED_LOOP was not substituted[\s\S]{0,400}?Guessing is not available/);
+    // and the route is printed with the input that decided it, so it is checkable at round time
+    expect(t).toMatch(/user_typed_loop=\$_USER_TYPED_LOOP/);
+    expect(t).toMatch(/THE SECOND IS NOT THE ONE A ROUND ALREADY REMOVED/);
+  });
+
+  // Step 7 claims to enumerate EVERY path; the explicit loop path reaches it with a real phase
+  // and a real exit, and was missing.
+  test.each(FILES)('%s: the persistence table covers the explicit loop path', (_l, file) => {
+    const t = fs.readFileSync(file as string, 'utf8');
+    expect(t).toMatch(/explicit `review --loop`, finished\*\* \| \*\*`loop`\*\* — literal; this lane never promotes/);
+    expect(t).toMatch(/explicit `review --loop`, still running \(125\)\*\* \| \*\*`loop`\*\* — still literal \| `125` \|/);
+  });
+
   test.each(FILES)('%s: a promoted round declares its output mixed and grades conservatively', (_l, file) => {
     const t = fs.readFileSync(file as string, 'utf8');
     expect(t).toMatch(/MIXED OUTPUT: what follows is the loop half AND the gate half concatenated/);
@@ -494,8 +523,16 @@ describe('VAS-2402: --phase auto and the five followers', () => {
     // It must ASSIGN, not only print: step 7 requires a value on every path, and printing
     // `unknown` while leaving the variable unset made the still-running round the one case the
     // log rule had no answer for.
-    expect(t).toMatch(/_OV_EXIT" = "125" \]; then[\s\S]{0,600}?_OV_ANNOUNCED_PHASE=unknown/);
-    expect(t).toMatch(/_OV_EXIT" = "125" \]; then[\s\S]{0,700}?ANNOUNCED_PHASE: unknown/);
+    // RE-DERIVED. This asserted the branch collapses to `unknown` unconditionally, which is only
+    // honest under `auto` — where the phase genuinely is undecided until it promotes or does not.
+    // An explicit loop or final_gate is LITERAL and never promotes, so `unknown` there discards a
+    // fact the invocation already holds. The branch is conditional now; assert the condition.
+    expect(t).toMatch(/if \[ "\$_OV_PHASE" = "auto" \]; then _OV_ANNOUNCED_PHASE=unknown; else _OV_ANNOUNCED_PHASE="\$_OV_PHASE"; fi/);
+    expect(t).toMatch(/`unknown` ONLY WHERE THE PHASE COULD STILL CHANGE/);
+    // By ADJACENCY to the assignment it follows, not by a character window from the branch head:
+    // several sites test exit 125, so the window was anchored to whichever came first. Third
+    // positional guard in this file to break this way — content, never position.
+    expect(t).toMatch(/_OV_ANNOUNCED_PHASE="\$_OV_PHASE"; fi\s*\n\s*echo "ANNOUNCED_PHASE: \$_OV_ANNOUNCED_PHASE — the round has NOT finished/);
     // RE-DERIVED. This asserted the literal `!= 125` guard on GATE_BACKEND, which is the CONDITION
     // rather than the property it was protecting: a still-running round must not print a gate
     // marker. The condition tightened to `= 0` — strictly stronger, since 125 is not 0 — and this
