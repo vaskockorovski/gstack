@@ -384,16 +384,15 @@ log_usage() {
   local _rt
   if [ "${9:-unknown}" = "unknown" ]; then _rt=null
   else _rt=$(printf '%s' "${9}" | tr -cd '0-9'); [ -n "$_rt" ] || _rt=null; fi
-  # ${10} prompt_bytes — the bytes this round actually sent, same unknown->null convention as
-  # the token counts above and for the same reason (gate round 9). It was reaching the round
-  # ledger and stopping there, so the analytics log — the file the cost analysis actually
-  # reads — still had no record of it. A measurement that exists in one of its two homes is
-  # half-plumbed, and the half that is missing is the one this log was built to feed.
-  local _pb
-  if [ "${10:-unknown}" = "unknown" ]; then _pb=null
-  else _pb=$(printf '%s' "${10}" | tr -cd '0-9'); [ -n "$_pb" ] || _pb=null; fi
-  printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"reasoning_tokens":%s,"prompt_bytes":%s,"tokens_partial":%s,"status":"%s","ts":"%s"}\n' \
-    "$_b" "$_m" "$_p" "$_l" "$_pt" "$_ct" "$_rt" "$_pb" "$_pa" "$_st" "$_ts" \
+  # ⚠ prompt_bytes is DELIBERATELY NOT written here, and this row is NOT the reason it exists.
+  # It was plumbed into this log at gate round 9's suggestion, and rounds 9 and 10 then produced
+  # three findings about that plumbing alone — one backend wired and not its sibling, a timeout
+  # path that could not report. The measurement's home is the ROUND LEDGER, which is what this
+  # change was opened to fill and what VAS-2659's histogram reads. Analytics-log parity is real
+  # work and is filed as its own ticket rather than kept here, where its rounds were costing a
+  # lane that had already met its own acceptance.
+  printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"reasoning_tokens":%s,"tokens_partial":%s,"status":"%s","ts":"%s"}\n' \
+    "$_b" "$_m" "$_p" "$_l" "$_pt" "$_ct" "$_rt" "$_pa" "$_st" "$_ts" \
     >> "$_STATE_DIR/analytics/outside-voice.jsonl" 2>/dev/null || true
 }
 
@@ -1607,9 +1606,9 @@ exec_codex() {
     # Passing `unknown unknown` for the TOKENS is right — codex reports none — but leaving the
     # byte count off dropped the whole FRONTIER tier out of the analytics log, which is the
     # default gate backend and so the more expensive half of the comparison this file feeds.
-    if [ "$rc" -eq 124 ]; then log_usage codex "" "$phase" "$label" unknown unknown timeout false unknown "${_cx_pb:-unknown}"
-    elif [ "$rc" -ne 0 ]; then log_usage codex "" "$phase" "$label" unknown unknown "error_$rc" false unknown "${_cx_pb:-unknown}"
-    else log_usage codex "" "$phase" "$label" unknown unknown ok false unknown "${_cx_pb:-unknown}"
+    if [ "$rc" -eq 124 ]; then log_usage codex "" "$phase" "$label" unknown unknown timeout
+    elif [ "$rc" -ne 0 ]; then log_usage codex "" "$phase" "$label" unknown unknown "error_$rc"
+    else log_usage codex "" "$phase" "$label" unknown unknown ok
     fi
     return "$rc"
   fi
@@ -1879,11 +1878,11 @@ print("unknown" if not isinstance(v, int) or isinstance(v, bool) else v)' "$resp
   fi
 
   if [ "$rc" -eq 124 ]; then
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout "$rpartial" "$rreason" "$_OV_ROUND_PROMPT_BYTES"
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout "$rpartial" "$rreason"
   elif [ "$rc" -ne 0 ]; then
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" "error_$rc" "$rpartial" "$rreason" "$_OV_ROUND_PROMPT_BYTES"
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" "error_$rc" "$rpartial" "$rreason"
   else
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" ok "$rpartial" "$rreason" "$_OV_ROUND_PROMPT_BYTES"
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" ok "$rpartial" "$rreason"
   fi
 
   rm -f "$resp_file" ${diff_file:+"$diff_file"}
