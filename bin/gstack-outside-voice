@@ -1038,7 +1038,7 @@ cmd_exec() {
   # recording looks exactly like a lane where nothing ran, which is the defect this whole change
   # exists to remove.
   _log_round() {
-    local _rc_in="${1:-0}" _rl _voice _caller _p1 _p2 _p3 _sev_args=() _tok_args=() _evt_tok=()
+    local _rc_in="${1:-0}" _rl _voice _caller _p1 _p2 _p3 _sev_args=() _tok_args=() _evt_tok=() _rl_help=""
 
     _rl=$(find_round_ledger) || {
       echo "gstack-outside-voice: note — no round ledger found, so this round was NOT recorded. The cheap/frontier split cannot be measured from this lane." >&2
@@ -1062,8 +1062,23 @@ cmd_exec() {
     # is ABSENT, meaning "nobody said" — as distinct from null, which means "the writer asked
     # and this backend does not report". Omitting the flags lands in the correct state; passing
     # them and losing the row does not.
+    # ALL THREE FLAGS, NOT ONE (loop r1 [P1]). The probe's whole job is to survive a version
+    # skew between two repositories, and inferring three capabilities from one is the shape that
+    # fails at exactly the moment it is needed: a ledger carrying --input-tokens but not
+    # --prompt-bytes would pass the probe and then die on the write, losing the row this branch
+    # exists to preserve. They ship in one commit today, so this cannot fire yet — which is the
+    # argument for closing it now rather than after something splits them.
+    #
+    # It remains a HEURISTIC and is worth naming as one (loop r1 [P2]): --help prints this
+    # script's header comment, so the match is against prose that DESCRIBES the flags rather
+    # than against a declaration the parser is bound to. A version whose header discussed the
+    # flags without implementing them would read as support. Requiring all three narrows that,
+    # and the failure mode is bounded — the write is non-fatal and says so on stderr.
     _tok_args=()
-    if "$_rl" --help 2>/dev/null | grep -q -- '--input-tokens'; then
+    _rl_help=$("$_rl" --help 2>/dev/null || true)
+    if grep -q -- '--input-tokens'  <<<"$_rl_help" \
+    && grep -q -- '--output-tokens' <<<"$_rl_help" \
+    && grep -q -- '--prompt-bytes'  <<<"$_rl_help"; then
       _tok_args=(--input-tokens "$_OV_ROUND_INPUT_TOKENS" --output-tokens "$_OV_ROUND_OUTPUT_TOKENS")
       # prompt_bytes is BACKEND-INDEPENDENT: it is the size of the prompt file this invocation
       # validated on the way in, known before any request was made, so it is the one figure that
