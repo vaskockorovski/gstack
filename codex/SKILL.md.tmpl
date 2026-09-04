@@ -62,8 +62,8 @@ Parse the user's input to determine which mode to run. **Settle this before the 
 below** — Step 0.4 needs the resolved mode to pick the phase whose backend it should test, and
 case 3 resolves the mode by asking the user, so nothing earlier can know it. Carry the result
 forward using the table in the next section — it is the authority, and it is not
-`loop`-or-`final_gate` any more: a plain review in a `claude-fleet-config` worktree resolves to
-`auto`. Challenge/consult/plan remain `none`.
+`loop`-or-`final_gate` any more: a plain UNFOCUSED review resolves to `auto`, in EVERY repo.
+Challenge/consult/plan remain `none`.
 
 1. `/codex review` or `/codex review <instructions>` — **Review mode** (Step 2A)
 1a. `/codex review --loop` — **Review mode, loop phase** (Step 2A, loop path): runs ONE
@@ -103,9 +103,23 @@ standing in:
 _REVIEW_REPO=$(git remote get-url origin 2>/dev/null \
   | sed -e 's/\.git$//' -e 's#^git@\([^:]*\):#https://\1/#' \
   | awk -F/ '{ if (NF>=2) printf "%s/%s", $(NF-1), $NF }')
-echo "REVIEW_REPO: ${_REVIEW_REPO:-unknown}"
-# The one repository the VAS-2402 rollout covers. Widening this is a separate, explicit decision.
-_REVIEW_AUTO_REPO="vaskockorovski/claude-fleet-config"
+_REVIEW_OWNER=${_REVIEW_REPO%%/*}
+echo "REVIEW_REPO: ${_REVIEW_REPO:-unknown}   (owner=${_REVIEW_OWNER:-unknown})"
+# WIDENED 2026-09-04 (VAS-2660), from the single repo `vaskockorovski/claude-fleet-config` to
+# every repository this OWNER holds. Taken as the explicit decision the previous comment asked
+# for, on measurement: under the one-repo scope only 3 of 127 rounds since 1 Sep were eligible,
+# and the other 124 took the frontier gate BY THIS RULE rather than by any failure.
+#
+# WHY OWNER AND NOT NAME, because the safety property is unchanged. The risk the original
+# scoping guarded against is a STRANGER'S clone or fork silently opting itself into
+# loop-then-gate rounds. A fork carries a DIFFERENT OWNER, so an owner match excludes it exactly
+# as the full-name match did. Matching the trailing path SEGMENT alone would not — that is the
+# case the comment above rejects, and it stays rejected.
+#
+# Still fails CLOSED: an unreadable remote, a missing origin or any other owner keeps the
+# explicit phase, because `_REVIEW_OWNER` is then empty or non-matching and the `-n` guard below
+# refuses it.
+_REVIEW_AUTO_OWNER="vaskockorovski"
 ```
 
 **`auto` replaces the typed flag that VAS-2371's rollout ran on.** Under that scaffold a cfc session
@@ -166,10 +180,18 @@ per-mode default below. Otherwise, use the per-mode defaults:
 # SET THIS LINE from the mode Step 0.3 ALREADY RESOLVED — do not re-derive it from what the
 # user typed:
 #   loop        any `review --loop`, focused or not.
-#   auto        an UNFOCUSED review in a claude-fleet-config worktree — `/codex review`, or
-#               bare `/codex` once the user picks Review at Step 0.3.
-#   final_gate  every other review: any FOCUSED review (`/codex review <instructions>`)
-#               wherever it runs, and any review outside a claude-fleet-config worktree.
+#   auto        ANY UNFOCUSED review, in ANY repo — `/codex review`, or bare `/codex` once the
+#               user picks Review at Step 0.3.
+#               ROLLOUT SCOPE, so a reader of the measurement meets it here: widened from
+#               claude-fleet-config-only on 2026-09-04 (VAS-2660). Under the old scope only
+#               3 of 127 rounds since 1 Sep were eligible, and the other 124 took the frontier
+#               gate BY THIS RULE rather than by any failure — which is what made a correctly
+#               working feature read as broken for three weeks.
+#   final_gate  every other review: any FOCUSED review (`/codex review <instructions>`),
+#               wherever it runs. FOCUS IS NOW THE ONLY THING that sends a review straight to
+#               the gate; the repo no longer does. VAS-2664 carries why the focused path
+#               cannot take `auto` yet (three coupled sites, and `auto` forces review mode
+#               where the focused launcher needs exec mode to carry its prompt).
 #   none        challenge/consult/plan, which call codex directly and must keep their gating.
 #
 # ⚠ FOCUS IS AN AXIS HERE, AND ONLY HERE — this is the one thing about the rule that is easy to
@@ -228,7 +250,7 @@ _OV_PHASE="<<SET-ME: loop | final_gate | auto | none>>"   # ← SUBSTITUTE THIS 
 # the line the reader actually has to edit.
 case "$_OV_PHASE" in
   loop|final_gate|auto|none) ;;
-  *) echo "STOP: _OV_PHASE was not substituted (still '$_OV_PHASE'). Step 0.3 has already resolved the mode; carry it here — 'loop' for any review --loop; 'auto' for an UNFOCUSED review in a claude-fleet-config worktree (including bare /codex once Review is picked); 'final_gate' for every other review — any FOCUSED review wherever it runs, and any review outside such a worktree; 'none' for challenge/consult/plan. Re-run this block after substituting." >&2
+  *) echo "STOP: _OV_PHASE was not substituted (still '$_OV_PHASE'). Step 0.3 has already resolved the mode; carry it here — 'loop' for any review --loop; 'auto' for ANY UNFOCUSED review in ANY repo (including bare /codex once Review is picked); 'final_gate' for every other review — any FOCUSED review, wherever it runs; 'none' for challenge/consult/plan. Re-run this block after substituting." >&2
      return 2 2>/dev/null || exit 2 ;;
 esac
 
@@ -418,11 +440,11 @@ esac
 # preflight_gate() — so round 1 could bypass the structural-sweep refusal and be presented as an
 # ordinary gate verdict instead of ROUND NOT RUN. Whether a plain review in this repo demanded a
 # sweep then depended on ledger state, which is not a rule anyone could follow.
-if [ "${_REVIEW_REPO:-}" = "${_REVIEW_AUTO_REPO:-}" ] && [ -n "${_REVIEW_REPO:-}" ] \
+if [ "${_REVIEW_OWNER:-}" = "${_REVIEW_AUTO_OWNER:-}" ] && [ -n "${_REVIEW_OWNER:-}" ] \
    && [ "$_USER_TYPED_LOOP" = "no" ]; then
   _REVIEW_ROUTE=auto
 fi
-echo "REVIEW_ROUTE: $_REVIEW_ROUTE   (repo=${_REVIEW_REPO:-unknown} resolved=${_OV_RESOLVED_PHASE:-unknown} user_typed_loop=$_USER_TYPED_LOOP)"
+echo "REVIEW_ROUTE: $_REVIEW_ROUTE   (repo=${_REVIEW_REPO:-unknown} owner=${_REVIEW_OWNER:-unknown} resolved=${_OV_RESOLVED_PHASE:-unknown} user_typed_loop=$_USER_TYPED_LOOP)"
 ```
 
 **If `REVIEW_ROUTE: auto`, skip to the loop path below and run it with `_OV_PHASE=auto`.** It
