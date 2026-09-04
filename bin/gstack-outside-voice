@@ -1174,20 +1174,45 @@ PY
     # ledger without the field cannot record it, and the row's contract already has a state for
     # that — the key is ABSENT, meaning "nobody said", as distinct from null, which means "the
     # writer asked and this backend does not report".
+    # stdout silenced, stderr LEFT TO THE CALLER, which is what makes the narrow retry below
+    # possible: the decision to retry depends on WHY the write failed, and swallowing stderr
+    # here would leave only an exit code that every failure shares.
     _write_round() { # $@ — extra flags
       "$_rl" -C "$repo_root" --voice "$_voice" "${_sev_args[@]}" "$@" \
         --phase-requested "$_phase_requested" \
         --phase-resolved "$phase" \
         --caller "$_caller" \
         --note "Logged by gstack-outside-voice (backend=$backend, label=$label). Classes are the driving session's to judge." \
-        >/dev/null 2>&1
+        >/dev/null
     }
-    if ! _write_round ${_tok_args[@]+"${_tok_args[@]}"}; then
-      if _write_round; then
-        echo "gstack-outside-voice: note — the round was recorded, but this ledger did not accept the consumption flags (it predates them), so the token keys are ABSENT from the row. Absent reads as 'nobody said', which is correct here — it is not a measured zero." >&2
-      else
-        echo "gstack-outside-voice: WARNING — the round RAN but could not be recorded in the ledger. This lane now under-counts; do not read its cheap/frontier split as complete." >&2
-      fi
+    # ⚠ THE RETRY IS GATED ON THE UNSUPPORTED-FLAG REFUSAL SPECIFICALLY, NOT ON ANY NON-ZERO
+    # EXIT (gate round 4 [P2]). Retrying every failure invokes the ledger TWICE for one round,
+    # and `GSTACK_ROUND_LEDGER` is an explicitly supported integration point — a wrapper that
+    # records or forwards each invocation therefore sees one round as two. That is round 3's P1
+    # exactly, moved from the happy path to the failure path: this file's own ledger-write suite
+    # uses precisely such an argv-recording wrapper.
+    #
+    # It is also the more dangerous half. A first attempt that appended its row and THEN exited
+    # non-zero would, under a blanket retry, append a SECOND row for the same round — inflating
+    # rounds_logged, which feeds the runaway cap and the next round's tier, and which is the
+    # tally VAS-2660 exists to protect. A retry justified by "the flags are not supported" must
+    # fire only when that is what happened.
+    #
+    # Matching the flag names as well as the phrase, so an unrelated unknown argument (a caller
+    # bug, a future rename) is reported rather than silently retried without them.
+    if ! _rl_err=$(_write_round ${_tok_args[@]+"${_tok_args[@]}"} 2>&1); then
+      case "$_rl_err" in
+        *"unknown argument: --input-tokens"*|*"unknown argument: --output-tokens"*|*"unknown argument: --prompt-bytes"*)
+          if _write_round 2>/dev/null; then
+            echo "gstack-outside-voice: note — the round was recorded, but this ledger did not accept the consumption flags (it predates them), so the token keys are ABSENT from the row. Absent reads as 'nobody said', which is correct here — it is not a measured zero." >&2
+          else
+            echo "gstack-outside-voice: WARNING — the round RAN but could not be recorded in the ledger, on either attempt. This lane now under-counts; do not read its cheap/frontier split as complete." >&2
+          fi ;;
+        *)
+          # NOT retried, and the reason is said out loud: a second write here could double-count
+          # a round the first attempt may already have appended.
+          echo "gstack-outside-voice: WARNING — the round RAN but could not be recorded in the ledger, and was NOT retried: the failure was not an unsupported-flag refusal, and a second write could record the round twice. This lane now under-counts; do not read its cheap/frontier split as complete. Ledger said: ${_rl_err:-(no output)}" >&2 ;;
+      esac
     fi
   }
 
