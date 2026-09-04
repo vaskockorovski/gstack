@@ -1174,27 +1174,45 @@ PY
     # ledger without the field cannot record it, and the row's contract already has a state for
     # that — the key is ABSENT, meaning "nobody said", as distinct from null, which means "the
     # writer asked and this backend does not report".
-    # ONE INVOCATION PER ROUND, ALWAYS — no probe, no retry, no compatibility path (gate rounds
-    # 3, 4 and 5, resolved by SUBTRACTION rather than by a fourth guard).
+    # ONE INVOCATION PER ROUND, AND NEVER A LOST ROUND — the two properties five rounds spent
+    # trading against each other, satisfied together by asking a question that is not a call.
     #
-    # Three consecutive rounds found the same defect wearing different clothes, and every one was
-    # right: a `--help` capability probe was an extra ledger call on the happy path (r3); a retry
-    # on any non-zero exit was an extra call on every failure (r4); and the retry NARROWED to the
-    # unsupported-flag case is still an extra call in precisely the situation it exists for (r5).
-    # `GSTACK_ROUND_LEDGER` is a supported integration point, so a wrapper that audits or persists
-    # each invocation records one round as two, skewing rounds_logged — which feeds `--phase auto`
-    # routing and the runaway cap. Each fix relocated the property instead of removing it; that is
-    # a loop that does not converge, and the move is to drop the claim rather than defend it again.
+    # r3/r4/r5 all found the same defect: the compatibility mechanism cost an EXTRA invocation of
+    # a substitutable binary, so a `GSTACK_ROUND_LEDGER` wrapper that audits each call recorded one
+    # round as two, skewing rounds_logged. Deleting the mechanism fixed that and opened the
+    # opposite hole, which r6 found: `find_round_ledger` still resolves to a separately-installed
+    # ledger, and on this machine that third target measurably does NOT take these flags — so an
+    # unconditional write would fail on EVERY round there, freezing rounds_logged and leaving
+    # resolve_phase and the runaway cap deciding from stale lane state. That is worse than a
+    # missing metric.
     #
-    # THE CLAIM BEING DROPPED IS ALSO OBSOLETE, which is what makes this a subtraction and not a
-    # regression. The compatibility path existed to survive a window where this adapter was live
-    # and the ledger was not. That window is CLOSED: the schema landed first, exactly as it was
-    # sequenced to, and ~/Development/cfc-live — the first resolution target after the env
-    # override — carries the flags as of ee1d9ef. There is no supported configuration left for
-    # the retry to rescue.
+    # Both findings are right, and neither survives the other's fix, because both were arguing
+    # about HOW MANY TIMES TO CALL THE LEDGER. So do not call it to find out: READ it. The
+    # capability is a property of the file, the answer is cached for the process, and the round is
+    # written exactly once either way.
     #
-    # A ledger that still refuses the flags now fails LOUDLY and the round row is lost, which is
-    # the honest outcome and a named cost rather than a mechanism that keeps generating findings.
+    # ⚠ THE KNOWN FALSE NEGATIVE, STATED RATHER THAN PAPERED OVER. A wrapper that delegates to a
+    # capable ledger does not itself contain the flag, so it reads as incapable and the round is
+    # written WITHOUT the token fields. That is a real cost and it is the safe direction: the row
+    # still lands, rounds_logged still moves, and the keys are ABSENT — which the schema defines
+    # as "nobody said", distinct from a null meaning "the backend does not report" and from a
+    # measured zero. A missing optional metric, recorded honestly, against a frozen round counter.
+    _ledger_takes_tokens() {
+      case "${_OV_LEDGER_TOKENS:-}" in
+        yes) return 0 ;; no) return 1 ;;
+      esac
+      # Every flag, not one: inferring three capabilities from a single sighting is the r1 finding.
+      if grep -q -- '--input-tokens)'  "$_rl" 2>/dev/null \
+      && grep -q -- '--output-tokens)' "$_rl" 2>/dev/null \
+      && grep -q -- '--prompt-bytes)'  "$_rl" 2>/dev/null; then
+        _OV_LEDGER_TOKENS=yes; return 0
+      fi
+      _OV_LEDGER_TOKENS=no
+      echo "gstack-outside-voice: note — this round ledger does not accept the consumption flags, so the round is recorded WITHOUT them and their keys are absent (which reads as 'nobody said', not as a measured zero). The round itself is still counted. The flags landed in claude-fleet-config #217; a wrapper that delegates to a newer ledger also reads as incapable here, by design." >&2
+      return 1
+    }
+    _ledger_takes_tokens || _tok_args=()
+
     "$_rl" -C "$repo_root" --voice "$_voice" "${_sev_args[@]}" \
       ${_tok_args[@]+"${_tok_args[@]}"} \
       --phase-requested "$_phase_requested" \
@@ -1202,7 +1220,7 @@ PY
       --caller "$_caller" \
       --note "Logged by gstack-outside-voice (backend=$backend, label=$label). Classes are the driving session's to judge." \
       >/dev/null 2>&1 \
-      || echo "gstack-outside-voice: WARNING — the round RAN but could not be recorded in the ledger. This lane now under-counts; do not read its cheap/frontier split as complete. If this ledger predates the consumption flags (--input-tokens/--output-tokens/--prompt-bytes), update it: they landed in claude-fleet-config #217." >&2
+      || echo "gstack-outside-voice: WARNING — the round RAN but could not be recorded in the ledger. This lane now under-counts; do not read its cheap/frontier split as complete." >&2
   }
 
   # ONE ROUND, RUN HERE. Extracted so this invocation can run a SECOND one -- the gate -- when
