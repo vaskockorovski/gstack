@@ -1732,8 +1732,31 @@ print("unknown" if v is None else v)' "$resp_file" 2>/dev/null || echo unknown)
   # though the row it lands on will be an EVENT rather than a round. `ptok`/`ctok` already hold
   # the `unknown` sentinel when the response carried no usage block, so this assignment cannot
   # manufacture a zero — it forwards whatever was actually established, including "nothing was".
-  _OV_ROUND_INPUT_TOKENS="$ptok"
-  _OV_ROUND_OUTPUT_TOKENS="$ctok"
+  #
+  # ⚠ A PARTIAL TOTAL IS NOT A MEASUREMENT, AND THE ROUND ROW HAS NO WAY TO SAY "PARTIAL" (gate
+  # round [P2]). On a retry where one billed call reported usage and the other did not, the
+  # request layer sets tokens_partial and the total is a known UNDERCOUNT. The usage log carries
+  # that marker in its own column; this row has three states and none of them is "incomplete", so
+  # forwarding the number here would record an undercount as exact — the same defect this whole
+  # field exists to prevent, one step along from writing 0 for unknown.
+  #
+  # It degrades to `unknown` rather than to the partial number, and that is the CORRECT direction
+  # for the analysis rather than merely the cautious one: the question these counts are being
+  # accumulated to answer is which requests cross a long-context band, and an undercounted input
+  # sits in a LOWER band than the request really occupied. A missing sample weakens the histogram;
+  # a silently undercounted one biases it, in the exact direction that hides the effect.
+  #
+  # The usage log still has the partial number and its marker, so nothing is lost — it is declined
+  # in the one place that cannot qualify it. Carrying `tokens_partial` into the row as a fourth
+  # state is the richer fix and is filed separately rather than widening this log-only change.
+  if [ "$rpartial" = "true" ]; then
+    _OV_ROUND_INPUT_TOKENS=unknown
+    _OV_ROUND_OUTPUT_TOKENS=unknown
+    echo "gstack-outside-voice: note — this round's token totals are PARTIAL (a retried request reported usage on only one leg), so they are recorded as unknown rather than as an exact count that would undercount spend. The partial figures remain in the analytics usage log with their tokens_partial marker." >&2
+  else
+    _OV_ROUND_INPUT_TOKENS="$ptok"
+    _OV_ROUND_OUTPUT_TOKENS="$ctok"
+  fi
 
   if [ "$rc" -eq 124 ]; then
     log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout "$rpartial" "$rreason"
