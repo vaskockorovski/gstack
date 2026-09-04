@@ -384,8 +384,16 @@ log_usage() {
   local _rt
   if [ "${9:-unknown}" = "unknown" ]; then _rt=null
   else _rt=$(printf '%s' "${9}" | tr -cd '0-9'); [ -n "$_rt" ] || _rt=null; fi
-  printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"reasoning_tokens":%s,"tokens_partial":%s,"status":"%s","ts":"%s"}\n' \
-    "$_b" "$_m" "$_p" "$_l" "$_pt" "$_ct" "$_rt" "$_pa" "$_st" "$_ts" \
+  # ${10} prompt_bytes — the bytes this round actually sent, same unknown->null convention as
+  # the token counts above and for the same reason (gate round 9). It was reaching the round
+  # ledger and stopping there, so the analytics log — the file the cost analysis actually
+  # reads — still had no record of it. A measurement that exists in one of its two homes is
+  # half-plumbed, and the half that is missing is the one this log was built to feed.
+  local _pb
+  if [ "${10:-unknown}" = "unknown" ]; then _pb=null
+  else _pb=$(printf '%s' "${10}" | tr -cd '0-9'); [ -n "$_pb" ] || _pb=null; fi
+  printf '{"backend":"%s","model":"%s","phase":"%s","label":"%s","prompt_tokens":%s,"completion_tokens":%s,"reasoning_tokens":%s,"prompt_bytes":%s,"tokens_partial":%s,"status":"%s","ts":"%s"}\n' \
+    "$_b" "$_m" "$_p" "$_l" "$_pt" "$_ct" "$_rt" "$_pb" "$_pa" "$_st" "$_ts" \
     >> "$_STATE_DIR/analytics/outside-voice.jsonl" 2>/dev/null || true
 }
 
@@ -1848,11 +1856,11 @@ print("unknown" if not isinstance(v, int) or isinstance(v, bool) else v)' "$resp
   fi
 
   if [ "$rc" -eq 124 ]; then
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout "$rpartial" "$rreason"
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout "$rpartial" "$rreason" "$_OV_ROUND_PROMPT_BYTES"
   elif [ "$rc" -ne 0 ]; then
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" "error_$rc" "$rpartial" "$rreason"
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" "error_$rc" "$rpartial" "$rreason" "$_OV_ROUND_PROMPT_BYTES"
   else
-    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" ok "$rpartial" "$rreason"
+    log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" ok "$rpartial" "$rreason" "$_OV_ROUND_PROMPT_BYTES"
   fi
 
   rm -f "$resp_file" ${diff_file:+"$diff_file"}
