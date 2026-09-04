@@ -1038,7 +1038,7 @@ cmd_exec() {
   # recording looks exactly like a lane where nothing ran, which is the defect this whole change
   # exists to remove.
   _log_round() {
-    local _rc_in="${1:-0}" _rl _voice _caller _p1 _p2 _p3 _sev_args=() _tok_args=() _evt_tok=() _rl_help=""
+    local _rc_in="${1:-0}" _rl _voice _caller _p1 _p2 _p3 _sev_args=() _tok_args=() _evt_tok=""
 
     _rl=$(find_round_ledger) || {
       echo "gstack-outside-voice: note — no round ledger found, so this round was NOT recorded. The cheap/frontier split cannot be measured from this lane." >&2
@@ -1062,33 +1062,15 @@ cmd_exec() {
     # is ABSENT, meaning "nobody said" — as distinct from null, which means "the writer asked
     # and this backend does not report". Omitting the flags lands in the correct state; passing
     # them and losing the row does not.
-    # ALL THREE FLAGS, NOT ONE (loop r1 [P1]). The probe's whole job is to survive a version
-    # skew between two repositories, and inferring three capabilities from one is the shape that
-    # fails at exactly the moment it is needed: a ledger carrying --input-tokens but not
-    # --prompt-bytes would pass the probe and then die on the write, losing the row this branch
-    # exists to preserve. They ship in one commit today, so this cannot fire yet — which is the
-    # argument for closing it now rather than after something splits them.
-    #
-    # It remains a HEURISTIC and is worth naming as one (loop r1 [P2]): --help prints this
-    # script's header comment, so the match is against prose that DESCRIBES the flags rather
-    # than against a declaration the parser is bound to. A version whose header discussed the
-    # flags without implementing them would read as support. Requiring all three narrows that,
-    # and the failure mode is bounded — the write is non-fatal and says so on stderr.
-    _tok_args=()
-    _rl_help=$("$_rl" --help 2>/dev/null || true)
-    if grep -q -- '--input-tokens'  <<<"$_rl_help" \
-    && grep -q -- '--output-tokens' <<<"$_rl_help" \
-    && grep -q -- '--prompt-bytes'  <<<"$_rl_help"; then
-      _tok_args=(--input-tokens "$_OV_ROUND_INPUT_TOKENS" --output-tokens "$_OV_ROUND_OUTPUT_TOKENS")
-      # prompt_bytes is BACKEND-INDEPENDENT: it is the size of the prompt file this invocation
-      # validated on the way in, known before any request was made, so it is the one figure that
-      # stays measurable on the codex path where no token count is ever reported. Guarded on
-      # non-emptiness rather than assumed: `_psz` is a local of cmd_exec and this reads it from a
-      # nested scope, which is exactly the coupling that breaks quietly if either is ever moved.
-      [ -n "${_psz:-}" ] && _tok_args+=(--prompt-bytes "$_psz")
-    else
-      echo "gstack-outside-voice: note — the round ledger predates --input-tokens, so this round's consumption was NOT recorded. The row is still written; its token keys are absent, which reads as 'nobody said' rather than as a measured zero." >&2
-    fi
+    # WHAT THE ROUND CONSUMED. Built unconditionally; whether the ledger ACCEPTS it is settled
+    # by attempting the write, not by asking first — see the write site below.
+    _tok_args=(--input-tokens "$_OV_ROUND_INPUT_TOKENS" --output-tokens "$_OV_ROUND_OUTPUT_TOKENS")
+    # prompt_bytes is BACKEND-INDEPENDENT: it is the size of the prompt file this invocation
+    # validated on the way in, known before any request was made, so it is the one figure that
+    # stays measurable on the codex path where no token count is ever reported. Guarded on
+    # non-emptiness rather than assumed: `_psz` is a local of cmd_exec and this reads it from a
+    # nested scope, which is exactly the coupling that breaks quietly if either is ever moved.
+    [ -n "${_psz:-}" ] && _tok_args+=(--prompt-bytes "$_psz")
 
     # THE VOICE IS THE MODEL, NOT THE BACKEND. `openrouter` is a gateway that can serve anything,
     # so filing every openrouter round under "openrouter" would collapse the per-voice hit rate
@@ -1167,14 +1149,46 @@ PY
       _sev_args=(--severity-unknown)
     fi
 
-    "$_rl" -C "$repo_root" --voice "$_voice" "${_sev_args[@]}" \
-      ${_tok_args[@]+"${_tok_args[@]}"} \
-      --phase-requested "$_phase_requested" \
-      --phase-resolved "$phase" \
-      --caller "$_caller" \
-      --note "Logged by gstack-outside-voice (backend=$backend, label=$label). Classes are the driving session's to judge." \
-      >/dev/null 2>&1 \
-      || echo "gstack-outside-voice: WARNING — the round RAN but could not be recorded in the ledger. This lane now under-counts; do not read its cheap/frontier split as complete." >&2
+    # ATTEMPT WITH THE CONSUMPTION FLAGS, FALL BACK WITHOUT THEM — never a separate probe.
+    #
+    # codex-round-log.sh lives in another repository on another release path
+    # (claude-fleet-config -> cfc-live -> ~/.claude), so there is a window where this adapter is
+    # live and the ledger is not. An older ledger answers an unrecognised flag with
+    # `die "unknown argument"`, which without a fallback would make EVERY round row in the fleet
+    # fail to write, leaving a warning on stderr and nothing else: silent under-counting, which
+    # is the defect this writer shipped to remove. Two PRs whose correctness depends on their
+    # landing order is a race nobody is watching, so the dependency is carried in-branch.
+    #
+    # ⚠ IT IS A RETRY, NOT A `--help` PROBE, AND THAT IS THE WHOLE FIX (gate round [P1]). A probe
+    # is an EXTRA LEDGER INVOCATION on every round, and the ledger is a binary a caller is
+    # entitled to substitute — `GSTACK_ROUND_LEDGER` exists for exactly that. A wrapper that
+    # records argv sees the probe as a second call, so this adapter's own ledger-write suite went
+    # from 8 pass / 13 fail the moment a probe was added: assertions that read "the row this
+    # round wrote" got `--help` instead. Measured, not reasoned — the suite was run.
+    #
+    # The retry is safe because the refusal happens in the ARGUMENT PARSER, before anything is
+    # appended: an unknown flag cannot half-write a row. And it costs nothing on the happy path,
+    # which a probe cannot say.
+    #
+    # Falling back also lands the row in the CORRECT state rather than merely a safe one: a
+    # ledger without the field cannot record it, and the row's contract already has a state for
+    # that — the key is ABSENT, meaning "nobody said", as distinct from null, which means "the
+    # writer asked and this backend does not report".
+    _write_round() { # $@ — extra flags
+      "$_rl" -C "$repo_root" --voice "$_voice" "${_sev_args[@]}" "$@" \
+        --phase-requested "$_phase_requested" \
+        --phase-resolved "$phase" \
+        --caller "$_caller" \
+        --note "Logged by gstack-outside-voice (backend=$backend, label=$label). Classes are the driving session's to judge." \
+        >/dev/null 2>&1
+    }
+    if ! _write_round ${_tok_args[@]+"${_tok_args[@]}"}; then
+      if _write_round; then
+        echo "gstack-outside-voice: note — the round was recorded, but this ledger did not accept the consumption flags (it predates them), so the token keys are ABSENT from the row. Absent reads as 'nobody said', which is correct here — it is not a measured zero." >&2
+      else
+        echo "gstack-outside-voice: WARNING — the round RAN but could not be recorded in the ledger. This lane now under-counts; do not read its cheap/frontier split as complete." >&2
+      fi
+    fi
   }
 
   # ONE ROUND, RUN HERE. Extracted so this invocation can run a SECOND one -- the gate -- when
