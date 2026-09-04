@@ -326,6 +326,14 @@ probe() {
 # one at read time; an absent one is not.
 _OV_ROUND_INPUT_TOKENS=unknown
 _OV_ROUND_OUTPUT_TOKENS=unknown
+# PROMPT BYTES AS SENT, WHICH IS NOT THE PROMPT FILE ON THE OPENROUTER PATH (gate round 7).
+# `_psz` is the size of --prompt-file, and that IS the whole request for codex, which reads the
+# repository itself. exec_openrouter additionally inlines a DIFF, so on that path the prompt file
+# is a fraction of what was sent — measured on this lane's own round 1: prompt_bytes 1197 against
+# input_tokens 3309, i.e. roughly 13k characters actually transmitted. Recording the smaller
+# number collapses large and small diffs into one bucket, which defeats the field's purpose, and
+# it is wrong in the reassuring direction: every round looks cheap.
+_OV_ROUND_PROMPT_BYTES=unknown
 
 # --- usage log --------------------------------------------------------------
 
@@ -1070,7 +1078,13 @@ cmd_exec() {
     # stays measurable on the codex path where no token count is ever reported. Guarded on
     # non-emptiness rather than assumed: `_psz` is a local of cmd_exec and this reads it from a
     # nested scope, which is exactly the coupling that breaks quietly if either is ever moved.
-    [ -n "${_psz:-}" ] && _tok_args+=(--prompt-bytes "$_psz")
+    # The as-sent figure when a backend published one, else the prompt file. codex publishes none
+    # and needs none: it reads the repository rather than an inlined diff, so the prompt file IS
+    # its whole request.
+    case "${_OV_ROUND_PROMPT_BYTES:-unknown}" in
+      ''|*[!0-9]*) [ -n "${_psz:-}" ] && _tok_args+=(--prompt-bytes "$_psz") ;;
+      *)           _tok_args+=(--prompt-bytes "$_OV_ROUND_PROMPT_BYTES") ;;
+    esac
 
     # THE VOICE IS THE MODEL, NOT THE BACKEND. `openrouter` is a gateway that can serve anything,
     # so filing every openrouter round under "openrouter" would collapse the per-voice hit rate
@@ -1316,6 +1330,7 @@ PY
     # round look measured when it is not.
     _OV_ROUND_INPUT_TOKENS=unknown
     _OV_ROUND_OUTPUT_TOKENS=unknown
+    _OV_ROUND_PROMPT_BYTES=unknown
 
     case "$backend" in
       codex)
@@ -1803,6 +1818,21 @@ print("unknown" if v is None else v)' "$resp_file" 2>/dev/null || echo unknown)
     _OV_ROUND_INPUT_TOKENS="$ptok"
     _OV_ROUND_OUTPUT_TOKENS="$ctok"
   fi
+
+  # WHAT THIS ROUND ACTUALLY SENT: the prompt plus the inlined diff (gate round 7). The diff file
+  # is read AFTER truncation, so this is the material that went out rather than what was offered —
+  # a capped diff must not be reported at its original size. Set OUTSIDE the partial-usage branch
+  # above on purpose: a partial USAGE report from the API says nothing about how many bytes this
+  # process sent, which it measured locally and knows exactly.
+  #
+  # JSON framing is excluded, deliberately: this number exists for the prompt-packet work, which
+  # optimises content, and a framing-inclusive figure would move with an encoding change nobody made.
+  _or_pb=$(wc -c < "$prompt_file" 2>/dev/null | tr -cd '0-9')
+  if [ -n "${diff_file:-}" ] && [ -f "$diff_file" ]; then
+    _or_db=$(wc -c < "$diff_file" 2>/dev/null | tr -cd '0-9')
+    [ -n "$_or_db" ] && _or_pb=$(( ${_or_pb:-0} + _or_db ))
+  fi
+  [ -n "${_or_pb:-}" ] && _OV_ROUND_PROMPT_BYTES="$_or_pb"
 
   if [ "$rc" -eq 124 ]; then
     log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout "$rpartial" "$rreason"
