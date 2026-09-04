@@ -443,7 +443,22 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
+# WHAT WE ACTUALLY SENT, MEASURED WHERE IT IS ASSEMBLED (gate round 8).
+# The shell cannot compute this: by the time a message reaches `ask` it carries the prompt file,
+# the inlined diff, the no-tool-access note and — when --findings-out is set — the fenced findings
+# contract. Reconstructing that sum in the wrapper would duplicate this file's assembly logic and
+# drift from it silently, which is the reconstruct-the-artefact trap; so the component that builds
+# the payload reports its own size.
+#
+# ACCUMULATED, not assigned: a retried or followed-up round calls `ask` more than once and every
+# call is billed, so the round's honest prompt cost is the sum. The count is of the MESSAGE, not
+# of the JSON envelope — the figure exists for the prompt-packet work, which optimises content.
+_SENT_PROMPT_BYTES = 0
+
+
 def ask(message, on_fail=None):
+    global _SENT_PROMPT_BYTES
+    _SENT_PROMPT_BYTES += len(message.encode("utf-8"))
     body = json.dumps({"model": model,
                        "messages": [{"role": "user", "content": message}],
                        "reasoning": {"effort": REASONING_EFFORT}}).encode("utf-8")
@@ -744,7 +759,10 @@ def write_usage(prompt_tokens, completion_tokens, served_model, partial=False, r
                    "completion_tokens": completion_tokens,
                    "reasoning_tokens": reasoning,
                    "model": served_model,
-                   "tokens_partial": bool(partial)}, fh)
+                   "tokens_partial": bool(partial),
+                   # Reported even when the token counts are null: this one is measured locally
+                   # and is known whatever the API chose to tell us about usage.
+                   "prompt_bytes": _SENT_PROMPT_BYTES}, fh)
 
 
 # No on_fail on THIS call, deliberately — reported as a defect twice, so state why. Nothing

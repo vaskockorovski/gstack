@@ -1110,7 +1110,14 @@ cmd_exec() {
       # the literal STRING "unknown", where the round row's contract stores JSON null, and two
       # spellings of one absence is how a reader ends up filtering for the wrong one.
       _evt_tok=()
-      case "${_psz:-}" in ''|*[!0-9]*) ;; *) _evt_tok+=(--field prompt_bytes="$_psz") ;; esac
+      # THE SAME RESOLUTION AS THE ROUND PATH (gate round 8). r7 taught the round row to record
+      # what was sent and left this sibling on `_psz`, so a failed openrouter round logged the
+      # prompt file alone while the successful rounds it is compared against logged prompt +
+      # everything the request layer added. Timeouts and errors are precisely the expensive cases
+      # this metric exists to explain, so under-reporting them is the worst place for it.
+      _evt_pb="${_OV_ROUND_PROMPT_BYTES:-unknown}"
+      case "$_evt_pb" in ''|*[!0-9]*) _evt_pb="${_psz:-}" ;; esac
+      case "$_evt_pb" in ''|*[!0-9]*) ;; *) _evt_tok+=(--field prompt_bytes="$_evt_pb") ;; esac
       case "$_OV_ROUND_INPUT_TOKENS" in ''|*[!0-9]*) ;; *) _evt_tok+=(--field input_tokens="$_OV_ROUND_INPUT_TOKENS") ;; esac
       case "$_OV_ROUND_OUTPUT_TOKENS" in ''|*[!0-9]*) ;; *) _evt_tok+=(--field output_tokens="$_OV_ROUND_OUTPUT_TOKENS") ;; esac
       "$_rl" -C "$repo_root" --event round_failed \
@@ -1827,12 +1834,18 @@ print("unknown" if v is None else v)' "$resp_file" 2>/dev/null || echo unknown)
   #
   # JSON framing is excluded, deliberately: this number exists for the prompt-packet work, which
   # optimises content, and a framing-inclusive figure would move with an encoding change nobody made.
-  _or_pb=$(wc -c < "$prompt_file" 2>/dev/null | tr -cd '0-9')
-  if [ -n "${diff_file:-}" ] && [ -f "$diff_file" ]; then
-    _or_db=$(wc -c < "$diff_file" 2>/dev/null | tr -cd '0-9')
-    [ -n "$_or_db" ] && _or_pb=$(( ${_or_pb:-0} + _or_db ))
+  # READ FROM THE COMPONENT THAT ASSEMBLED THE PAYLOAD, not reconstructed here (gate round 8).
+  # prompt-file + diff is NOT what goes out: the request layer also appends a no-tool-access note
+  # and, when --findings-out is set, the fenced findings contract — several KB the wrapper cannot
+  # see — and a retried round sends a follow-up prompt that is billed too. Summing the parts we
+  # happen to know about here would duplicate that file's assembly logic and drift from it in
+  # silence, biasing every openrouter row LOW. It reports its own total instead.
+  if [ -s "$resp_file" ]; then
+    _or_pb=$("$_PY" -c 'import json,sys
+v=json.load(open(sys.argv[1])).get("prompt_bytes")
+print("unknown" if not isinstance(v, int) or isinstance(v, bool) else v)' "$resp_file" 2>/dev/null || echo unknown)
+    case "$_or_pb" in ''|*[!0-9]*) ;; *) _OV_ROUND_PROMPT_BYTES="$_or_pb" ;; esac
   fi
-  [ -n "${_or_pb:-}" ] && _OV_ROUND_PROMPT_BYTES="$_or_pb"
 
   if [ "$rc" -eq 124 ]; then
     log_usage openrouter "$rmodel" "$phase" "$label" "$ptok" "$ctok" timeout "$rpartial" "$rreason"
