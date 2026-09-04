@@ -1358,7 +1358,13 @@ _XHIGH=no
 case "$_XHIGH" in yes|no) ;; *) echo "STOP: _XHIGH must be yes or no (got '$_XHIGH'). Step 0.3 resolves it: yes when the user typed --xhigh." >&2; return 2 2>/dev/null || exit 2 ;; esac
 if [ "$_XHIGH" = yes ]; then _REVIEW_EFFORT=xhigh; else _REVIEW_EFFORT=high; fi
 echo "REVIEW_EFFORT: $_REVIEW_EFFORT"   # printed so an unapplied --xhigh is visible, not inferred
-~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
+# --gate-direct is a DECLARATION, and this block is entitled to make it: REVIEW_ROUTE said
+# `gate`, so either the repo is outside the auto rollout or the user typed --loop. Both are
+# straight-gate rounds by decision rather than by omission. The adapter refuses an undeclared
+# --phase final_gate precisely so that a caller which never made that decision — a second
+# harness composing this command from its own prompt — cannot bypass --phase auto in silence
+# (VAS-2660). It is counted on the round row as phase_requested=final_gate, not suppressed.
+~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit --gate-direct \
   --phase final_gate --codex-mode review \
   --prompt-file "$_GATE_PROMPT" --repo-root "$_REPO_ROOT" \
   --base "origin/<base>" \
@@ -1654,6 +1660,18 @@ printf '%s' "$_OV_SUBJECT" > "$_OV_LAUNCHED"
 # first splices VALUES into text the inner shell re-parses and was measured EXECUTING a path
 # (`/home/$(id -u)/p` arrived as `/home/1000/p`); the second is the in-flight corruption above.
 # Both failures are silent. There is a contract test — `test/codex-skill-no-positionals.test.ts`.
+# ⚠ THIS LAUNCHER DELIBERATELY DOES **NOT** PASS --gate-direct, and that is the one decision on
+# this page worth reading twice (VAS-2660). The other two exec sites declare it because they are
+# entitled to: REVIEW_ROUTE said `gate`, or focus cannot take `auto` yet. This launcher is the
+# AUTO lane. The only phases that legitimately reach it are `auto` and an explicitly-typed
+# `loop` — and the adapter ignores the flag on both, so passing it would buy nothing.
+#
+# What it WOULD buy is silence on the one case this file already names as a bug: a session
+# obeying a stale routing line skips the inline gate and hands this launcher
+# `--phase final_gate`, "so the auto lane never runs and the feature is silently bypassed".
+# Undeclared, that now stops with a message naming the bypass instead of quietly buying a
+# frontier round. A blanket --gate-direct here would re-silence exactly the failure the refusal
+# was built to expose — the flag is a declaration, and this launcher has nothing to declare.
 GSTACK_OV_PROMPT="$_LOOP_PROMPT" \
 GSTACK_OV_REPO="$_REPO_ROOT" \
 GSTACK_OV_FINDINGS="$_OV_FINDINGS" \
@@ -2087,7 +2105,14 @@ if [ "$_XHIGH" = yes ]; then _REVIEW_EFFORT=xhigh
 elif [ "$_FOCUS_PHASE" = "loop" ]; then _REVIEW_EFFORT=medium
 else _REVIEW_EFFORT=high; fi
 echo "FOCUS_EFFORT: $_REVIEW_EFFORT"
-~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit \
+# --gate-direct, unconditionally, and it is honest here rather than a rubber stamp: the focused
+# path CANNOT take `auto` — _FOCUS_PHASE offers loop | final_gate and nothing else — so when it
+# names final_gate that is a decision this template already made, not a bypass it drifted into.
+# Widening focus to `auto` is VAS-2664 (three coupled sites and an exec-vs-review semantics
+# change), blocked on the measurement week; when it lands, this flag comes off with it.
+# The flag is inert on a `loop` phase, so it needs no branch: the adapter only refuses an
+# undeclared final_gate.
+~/.claude/skills/gstack/bin/gstack-outside-voice exec --explicit --gate-direct \
   --phase "$_FOCUS_PHASE" --codex-mode exec \
   --prompt-file "$_PROMPT_FILE" --repo-root "$_REPO_ROOT" \
   --base "origin/<base>" \
