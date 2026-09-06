@@ -59,9 +59,36 @@ function run(args: string[], extra: Record<string, string> = {}) {
   return spawnSync(ADAPTER, args, { encoding: 'utf8', env: env(extra) });
 }
 
-// The rows the adapter WROTE, excluding the `--json` reads it makes to route and gate.
+// The OUTCOME rows the adapter wrote, excluding the `--json` reads it makes to route and gate,
+// and excluding the `adapter_invocation` start marker.
+//
+// SELECTED BY CONTENT, BECAUSE POSITION STOPPED BEING UNAMBIGUOUS (VAS-2683). Every assertion in
+// this file reads `rows()[0]`, which was exact while a round made exactly one non-json ledger
+// call. The invocation record added alongside it is written BEFORE the backend runs, so it took
+// that slot and 8 cells began asserting against a start marker — 21 pass / 0 fail became 13 / 8,
+// with each failure reading as a defect in the adapter rather than in the selector.
+//
+// The filter keeps `rows()` meaning what its callers already assume it means — what the round
+// RESULTED in — so their positional reads are exact again over a set with one member per outcome.
+// The start marker gets its own accessor and its own cells rather than being folded in: they
+// answer different questions, and merging them is what made the position ambiguous in the first
+// place. (Fleet rule: reference by CONTENT, never by POSITION.)
+// ONE predicate, used everywhere a caller means "a row describing what the round RESULTED in".
+// Exported as a const rather than inlined because the inline copy is what made this a class
+// rather than an instance: `rows()` was fixed first and a cell further down open-coded the same
+// filter, so it kept selecting the start marker and kept failing for a reason that had nothing to
+// do with its subject.
+const isOutcomeRow = (l: string) =>
+  !!l.trim() && !l.includes('--json') && !l.includes('--event adapter_invocation');
+
 function rows(): string[] {
-  return fs.readFileSync(capture, 'utf8').split('\n').filter(l => l.trim() && !l.includes('--json'));
+  return fs.readFileSync(capture, 'utf8').split('\n').filter(isOutcomeRow);
+}
+
+// The start markers. One per round the adapter actually DISPATCHED — never for a round it refused.
+function invocations(): string[] {
+  return fs.readFileSync(capture, 'utf8').split('\n')
+    .filter(l => l.trim() && l.includes('--event adapter_invocation'));
 }
 
 function stubCodexExit(code: number) {
@@ -343,10 +370,10 @@ describe('caller detection — declared, then inherited, then honestly unknown',
     let written = '';
     while (Date.now() < deadline) {
       written = fs.readFileSync(capture, 'utf8');
-      if (written.split('\n').some(l => l.trim() && !l.includes('--json'))) break;
+      if (written.split('\n').some(isOutcomeRow)) break;
       spawnSync('sh', ['-c', 'sleep 0.2']);
     }
-    const row = written.split('\n').find(l => l.trim() && !l.includes('--json'));
+    const row = written.split('\n').find(isOutcomeRow);
     // Guard the FIXTURE, not just the result: an empty capture would make the assertion below
     // vacuous, and "the detached run never completed" must not read as "the caller was unknown".
     expect(row, 'the detached run wrote no ledger row — the fixture failed, the assertion is meaningless').toBeDefined();
@@ -386,5 +413,59 @@ describe('a ledger that cannot be written is loud, and never fatal', () => {
       { GSTACK_ROUND_LEDGER: '\0DELETE', HOME: path.join(tmp, 'nohome') });
     expect(r.status).toBe(0);
     expect(`${r.stderr}`).toMatch(/no round ledger found, so this round was NOT recorded/);
+  });
+});
+
+// VAS-2683. The adapter records that a round STARTED, not only that one finished. The runaway
+// breaker counts rounds from this ledger now instead of matching the command line, which made the
+// ledger the sole instrument — so "the ledger stopped recording" became a silent failure with no
+// detector, because a well-formed ledger holding no round rows reads exactly like a quiet lane.
+// The gap between a start marker and its completion is what makes those two distinguishable.
+describe('a round records that it STARTED, so a lost round is not a quiet lane', () => {
+  test('a dispatched round writes exactly one invocation row, carrying phase, backend and caller', () => {
+    run([...GATE, ...TARGET()]);
+    const inv = invocations();
+    expect(inv.length).toBe(1);
+    expect(inv[0]).toContain('--event adapter_invocation');
+    expect(inv[0]).toContain('phase_resolved=final_gate');
+    expect(inv[0]).toContain('backend=codex');
+    // No round ordinal: the ledger owns that number, and a second writer for it is the
+    // double-count VAS-2683 exists to remove.
+    expect(inv[0]).not.toMatch(/--round\b/);
+  });
+
+  // THE PLACEMENT IS THE PROPERTY, and this is the cell that proves it rather than asserting it.
+  // The marker sits after every refusal gate and immediately before the dispatch, so a round the
+  // adapter REFUSED leaves no invocation behind. Without that, the breaker would see unpaired
+  // invocations on lanes where nothing was ever billed and report a blind ledger — an alarm that
+  // fires on correct behaviour, which is how an alarm loses its meaning.
+  test('a REFUSED round writes no invocation row — nothing was billed, so nothing is owed a completion', () => {
+    run(['exec', '--explicit', '--phase', 'final_gate', '--codex-mode', 'review', ...TARGET()]);
+    // The refusal itself is on the record...
+    expect(rows()[0]).toContain('--event round_blocked');
+    // ...and it is NOT counted as a round that started.
+    expect(invocations().length).toBe(0);
+  });
+
+  // A REFUSAL REACHED INSIDE _round, which is the only kind that can prove the placement.
+  //
+  // Two earlier attempts at this cell were deleted for being vacuous, and the second one is the
+  // instructive one. A source-level guard asserted the call sat between the opening of _round and
+  // the dispatch with no refusal in between — and a mutation that moved the call ABOVE every gate
+  // still passed, because the `case "$backend" in` it anchored on matched the REFUSAL case rather
+  // than the dispatch one. Reference-by-position, inside the guard written to enforce placement.
+  //
+  // A disabled backend refuses at `return 3` INSIDE _round, after the function opens and before
+  // anything dispatches. That is the exact window the marker must sit below, so a round refused
+  // this way must leave no invocation behind — and a marker placed too early leaves one.
+  test('a round refused INSIDE _round writes no invocation — nothing dispatched, nothing is owed', () => {
+    spawnSync(CONFIG, ['set', 'outside_voice_gate', 'disabled'], { encoding: 'utf8', env: env() });
+    try {
+      const r = run([...GATE, ...TARGET()]);
+      expect(r.status).toBe(3);                 // the adapter's "disabled for this phase" exit
+      expect(invocations().length).toBe(0);
+    } finally {
+      spawnSync(CONFIG, ['set', 'outside_voice_gate', 'codex'], { encoding: 'utf8', env: env() });
+    }
   });
 });

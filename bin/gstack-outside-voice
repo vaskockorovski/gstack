@@ -1052,6 +1052,26 @@ cmd_exec() {
   # SILENT either: a write that fails says so on stderr, because a lane that quietly stopped
   # recording looks exactly like a lane where nothing ran, which is the defect this whole change
   # exists to remove.
+  # The START of a round. See the long note at the call site for why it exists, why it is placed
+  # after the refusal gates, and why it lives inside _round rather than at either call site.
+  #
+  # Carries the phase and the caller so a reader can tell WHICH round went unrecorded, and the
+  # backend so an unpaired invocation can be attributed to a tier. Deliberately does NOT carry a
+  # round ordinal: the ledger owns that, and inventing one here would be a second writer for a
+  # number that already has an owner — the exact double-count VAS-2683 exists to remove.
+  _log_invocation() {
+    local _rl
+    _rl=$(find_round_ledger) || return 0   # no ledger: _log_round already warns about this lane
+    "$_rl" -C "$repo_root" --event adapter_invocation \
+      --field phase_requested="$_phase_requested" \
+      --field phase_resolved="$phase" \
+      --field backend="$(resolve_backend "$phase")" \
+      --field caller="$(detect_caller)" \
+      --note "The adapter is about to run a '$phase' round. Recorded BEFORE the backend call so that a round which never reports back is distinguishable from a lane where nothing ran — the runaway breaker reads the gap between this row and its completion as 'not observing' rather than as a healthy zero." \
+      >/dev/null 2>&1 \
+      || echo "gstack-outside-voice: WARNING — could not record this invocation in the ledger. The runaway breaker cannot tell a lost round from a quiet lane without it." >&2
+  }
+
   _log_round() {
     local _rc_in="${1:-0}" _rl _voice _caller _p1 _p2 _p3 _sev_args=() _tok_args=() _evt_tok=""
 
@@ -1345,6 +1365,37 @@ PY
     _OV_ROUND_INPUT_TOKENS=unknown
     _OV_ROUND_OUTPUT_TOKENS=unknown
     _OV_ROUND_PROMPT_BYTES=unknown
+
+    # --- THE INVOCATION RECORD. THE OTHER END OF THE ROUND (VAS-2683) ---------
+    #
+    # `_log_round` below records that a round FINISHED. Nothing recorded that one STARTED, and
+    # the difference is the whole of what a runaway breaker cannot otherwise see.
+    #
+    # `codex-round-breaker.sh` now counts rounds from this ledger instead of matching the command
+    # line, which closed five sightings of it counting zero while rounds ran — but it made the
+    # ledger the SOLE instrument, so "the ledger stopped recording" became a silent failure with
+    # no detector. A well-formed ledger holding no round rows reads exactly like a quiet lane.
+    #
+    # An invocation row is what makes those two distinguishable. An invocation older than this
+    # adapter could plausibly still be running, with no completion to pair against, means review
+    # happened and the ledger did not see the end of it. The breaker reports that as its own
+    # state — `not observing` — rather than as a healthy zero.
+    #
+    # PLACED HERE, after every refusal gate and immediately before the dispatch, because that is
+    # the first instant a round is genuinely going to spend. Recording earlier would manufacture
+    # unpaired invocations for rounds that were refused (disabled backend, missing pre-flight
+    # sweep) and the breaker would report a blind ledger on lanes where nothing was ever billed.
+    #
+    # INSIDE `_round` for the same reason `_log_round` is: the convergence branch calls `_round` a
+    # SECOND time for the promoted gate, so a record at either call site would miss one of the two
+    # — and it would miss the gate, the expensive one, on exactly the lanes `--phase auto` creates.
+    #
+    # Written through `--event`, which every version of the ledger accepts, so this cannot fail on
+    # an install whose codex-round-log.sh predates it. Non-fatal and non-silent, like its sibling:
+    # the review is already going to be billed, and losing the round to a ledger problem would be
+    # strictly worse than losing the row — but a lane that quietly stopped recording is the defect
+    # this row exists to expose, so a failed write says so.
+    _log_invocation
 
     case "$backend" in
       codex)
